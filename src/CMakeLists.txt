@@ -1,3 +1,16 @@
-set(my-lisp_SRC main.c)
+find_package(BISON)
+find_package(FLEX)
 
-add_executable(my-lisp ${my-lisp_SRC})
+BISON_TARGET(MyParser my_lisp.y ${CMAKE_CURRENT_BINARY_DIR}/my_lisp.tab.c)
+FLEX_TARGET(MyScanner my_lisp.l  ${CMAKE_CURRENT_BINARY_DIR}/my_lisp.lex.c)
+
+ADD_FLEX_BISON_DEPENDENCY(MyScanner MyParser)
+
+set(CMAKE_INCLUDE_CURRENT_DIR ON)
+
+add_executable(my-lisp
+  my_lisp_main.c
+  my_lisp.c
+  ${FLEX_MyScanner_OUTPUTS}  
+  ${BISON_MyParser_OUTPUTS}
+  )
