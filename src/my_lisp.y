@@ -1,5 +1,8 @@
 %define parse.trace
+%define parse.error verbose
+
 %define api.pure full
+%locations
 
 %param { yyscan_t scanner }
 %parse-param { parse_data *data }
@@ -7,11 +10,11 @@
 %code requires {
     typedef void* yyscan_t;
     #include "my_lisp.h"
-    void yyerror(yyscan_t scanner, parse_data *data, char *s, ...);    
 }
 
 %code {
     #include "my_lisp.lex.h"
+    void yyerror(YYLTYPE *yylloc, yyscan_t scanner, parse_data *data, const char *s, ...);        
 }
 
 %union {
@@ -31,7 +34,7 @@
 %token character
 %token <str> STRING
 
-%type <obj> number boolean symbol pair string list_item datum lexeme_datum compound_datum list
+%type <obj> number boolean symbol string list_item datum lexeme_datum compound_datum list
 
 %token EOL
 
@@ -71,14 +74,21 @@ compound_datum: list
                 // | bytevector
 ;
 
-pair: datum PERIOD datum { $$ = cons($1, $3); }
-
 list_item: datum { $$ = cons($1, NIL); }
 | datum list_item { $$ = cons($1, $2); }
-| pair
 ;
 
 list: LP list_item RP { $$= $2;}
+| LP datum PERIOD datum RP { $$ = cons($2, $4); }
+| LP list_item PERIOD datum RP {
+    object *o;
+    for_each_list(o, $2) {
+        if (!cdr(idx)) {
+            setcdr(idx, $4);
+        }
+    }
+    $$ = $2;
+ }
 | LSB list_item RSB { $$ = $2; }
 | LP RP { $$ = NIL; }
 | LSB RSB { $$ = NIL; }

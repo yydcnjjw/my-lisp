@@ -6,14 +6,16 @@
 #include <stdint.h>
 
 typedef enum {
-    T_FIXNUM,
-    T_FLONUM,
-    T_BOOLEAN,
-    T_SYMBOL,
-    T_STRING,
-    T_PAIR,
-    T_CHARACTER,
-    T_ERR
+    T_PRIMITIVE_PROC = 0x1,
+    T_COMPOUND_PROC = 0x2,
+    T_FIXNUM = 0x4,
+    T_FLONUM = 0x8,
+    T_BOOLEAN = 0x10,
+    T_SYMBOL = 0x20,
+    T_STRING = 0x40,
+    T_PAIR = 0x80,
+    T_CHARACTER = 0x100,
+    T_ERR = 0x200
 } object_type;
 
 typedef struct object_t object;
@@ -49,15 +51,30 @@ struct error_t {
 };
 
 typedef struct error_t error;
-    
+
+struct procedure_t {
+    char *name;
+};
+
+typedef struct procedure_t procedure;
+
 struct compound_proc_t {
     object *parameters;
     object *body;
     env *env;
+    procedure procedure;
 };
 typedef struct compound_proc_t compound_proc;
 
-typedef object *primitive_proc(env *env, object *args);
+typedef object *
+primitive_proc_ptr(env *env, object *args);
+
+struct primitive_proc_t {
+    primitive_proc_ptr *proc;
+    procedure procedure;
+};
+
+typedef struct primitive_proc_t primitive_proc;
 
 struct object_t {
     object_type type;
@@ -68,6 +85,7 @@ struct object_t {
         bool bool_val;
         char char_val;
         primitive_proc *primitive_proc;
+        compound_proc *compound_proc;
         symbol *symbol;
         pair *pair;
         string *str;
@@ -81,7 +99,7 @@ struct parse_data {
 };
 typedef struct parse_data parse_data;
 
-symbol *lookup(parse_data*, char *);
+symbol *lookup(parse_data *, char *);
 object *new_boolean(bool val);
 object *new_fix_number(int64_t val);
 object *new_symbol(symbol *s);
@@ -90,17 +108,29 @@ string *make_string(char *, size_t);
 object *new_string(string *);
 
 object *cons(object *car, object *cdr);
+object *car(object *pair);
+object *cdr(object *pair);
+object *setcdr(object *list, object *cdr);
 object *NIL;
 
 env *new_env(void);
+void env_add_builtins(env *, parse_data *);
 
 #define NHASH 9997
 
 object *eval(object *exp, env *env);
 
-
+void del_object(object *o);
 void object_print(object *o);
 
 void *my_malloc(size_t size);
+
+#define for_each_list(o, list)                                                 \
+    for (object *idx = list;                                                   \
+         ((o) = (!(idx) ? NULL                                                 \
+                        : ((idx) && (idx)->type == T_PAIR) ? car((idx))        \
+                                                           : idx)) != NULL;    \
+         (idx) = (idx)->type == T_PAIR ? cdr((idx)) : NULL)
+
 
 #endif /* MY_LISP_H */

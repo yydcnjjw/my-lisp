@@ -1,6 +1,6 @@
 %option noyywrap nodefault 8bit
 %option yylineno
-%option reentrant bison-bridge
+%option reentrant bison-bridge bison-locations
 /* %option debug */
 %option header-file="my_lisp.lex.h"
 
@@ -14,7 +14,9 @@ LETTER [a-zA-Z]
 INITIAL {SPECIAL_INITIAL}|{LETTER}
 DIGIT [0-9]
 SPECIAL_SUBSEQUENT [+|-|.|@]
-SUBSEQUENT {INITIAL}|{DIGIT}|{SPECIAL_SUBSEQUENT}
+SUBSEQUENT ({INITIAL}|{DIGIT}|{SPECIAL_SUBSEQUENT})
+
+PECULIAR_IDENTIFIER "+"|"-"|"..."|"->"{SUBSEQUENT}*
 IDENTIFIER {INITIAL}{SUBSEQUENT}*
 
 %x string
@@ -45,10 +47,17 @@ IDENTIFIER {INITIAL}{SUBSEQUENT}*
 "#("    { return VECTOR_LP; }
 "#vu8(" { return VECTOR_BYTE_LP; }
 
-{IDENTIFIER} { yylval->symbol = lookup(yyextra, yytext); return IDENTIFIER; }
+{IDENTIFIER} |
+"+" |
+"-" |
+"..." |
+"->"{SUBSEQUENT}* { yylval->symbol = lookup(yyextra, yytext); return IDENTIFIER; }
 
-{DIGIT}+"."{DIGIT}* |
-"."?{DIGIT}+ { yylval->fix_num = atoll(yytext); return NUMBER; }
+[-+]?{DIGIT}+"."{DIGIT}* |
+[-+]?"."?{DIGIT}+ {
+    yylval->fix_num = atoll(yytext);
+    return NUMBER;
+}
 
 \" { string_buf_ptr = string_buf; BEGIN(string); }
 <string>{
@@ -62,7 +71,7 @@ IDENTIFIER {INITIAL}{SUBSEQUENT}*
 \\\" { *string_buf_ptr++ = '\"'; }
 \\\\ { *string_buf_ptr++ = '\\'; }
 
-<<EOF>> { yyerror(yyscanner, yyextra, "the string misses \" to terminate before EOF"); }
+<<EOF>> { yyerror(yylloc, yyscanner, yyextra, "the string misses \" to terminate before EOF"); }
 [^\\\"]+ { char *yptr = yytext; while (*yptr) *string_buf_ptr++ = *yptr++;  }
 \" {
     BEGIN(INITIAL);
@@ -83,7 +92,7 @@ IDENTIFIER {INITIAL}{SUBSEQUENT}*
 
 [ \t] { }
 
-. { yyerror(yyscanner, yyextra, "Mystery character %c\n", *yytext); }
+. { yyerror(yylloc, yyscanner, yyextra, "Mystery character %c\n", *yytext); }
 
 <<EOF>> { exit(0); }
 %%
