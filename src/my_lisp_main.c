@@ -5,7 +5,8 @@
 #include "my_lisp.tab.h"
 #include "my_lisp.lex.h"
 
-void yyerror(YYLTYPE *yylloc, yyscan_t scanner, parse_data *data, const char *s, ...) {
+void yyerror(YYLTYPE *yylloc, yyscan_t scanner, parse_data *data, const char *s,
+             ...) {
     va_list ap;
     va_start(ap, s);
 
@@ -41,17 +42,33 @@ int main(int argc, char *argv[]) {
         perror("init alloc failed");
         return 1;
     }
+    FILE *in;
+    if (argc == 2) {
+        in = fopen(argv[1], "r");
+        yyset_in(in, scanner);
+    }
 
     yyset_debug(1, scanner);
 
     for (;;) {
-        printf("> ");
-        yyparse(scanner, &data);
-        if (data.ast) {
-            object_print(eval(data.ast, env));            
+        int ret = yyparse(scanner, &data);
+        if (data.ast && !ret) {
+            object *value = eval(data.ast, env);
+            object_print(value, env);
+            printf("\n");
+            free_object(data.ast);
+            if (value != data.ast) {
+                free_object(value);                
+            }
+            data.ast = NULL;
+        } else {
+            break;
         }
-        data.ast = NULL;
-        printf("\n");
     }
+    yylex_destroy(scanner);
+    free_env(env);
+    free_lisp(&data);
+
+    fclose(in);
     return 0;
 }

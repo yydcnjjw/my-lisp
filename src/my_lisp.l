@@ -94,5 +94,5 @@ IDENTIFIER {INITIAL}{SUBSEQUENT}*
 
 . { yyerror(yylloc, yyscanner, yyextra, "Mystery character %c\n", *yytext); }
 
-<<EOF>> { exit(0); }
+<<EOF>> { yyterminate(); }
 %%

@@ -52,17 +52,10 @@ struct error_t {
 
 typedef struct error_t error;
 
-struct procedure_t {
-    char *name;
-};
-
-typedef struct procedure_t procedure;
-
 struct compound_proc_t {
     object *parameters;
     object *body;
     env *env;
-    procedure procedure;
 };
 typedef struct compound_proc_t compound_proc;
 
@@ -71,7 +64,6 @@ primitive_proc_ptr(env *env, object *args);
 
 struct primitive_proc_t {
     primitive_proc_ptr *proc;
-    procedure procedure;
 };
 
 typedef struct primitive_proc_t primitive_proc;
@@ -114,16 +106,20 @@ object *setcdr(object *list, object *cdr);
 object *NIL;
 
 env *new_env(void);
+void free_env(env *e);
+
 void env_add_builtins(env *, parse_data *);
 
 #define NHASH 9997
 
 object *eval(object *exp, env *env);
 
-void del_object(object *o);
-void object_print(object *o);
+void free_object(object *o);
+void object_print(object *o, env *);
 
 void *my_malloc(size_t size);
+
+void free_lisp(parse_data *data);
 
 #define for_each_list(o, list)                                                 \
     for (object *idx = list;                                                   \

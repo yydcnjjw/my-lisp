@@ -13,7 +13,25 @@ void *my_malloc(size_t size) {
         printf("malloc error\n");
         exit(0);
     }
+    bzero(ret, size);
     return ret;
+}
+
+void my_free(void *o) {
+    if (o) {
+        free(o);
+    }
+}
+
+void *my_realloc(void *p, size_t size) {
+    if (!p) {
+        return my_malloc(size);
+    }
+    return realloc(p, size);
+}
+
+char *my_strdup(char *s) {
+    return strdup(s);
 }
 
 static object True = {.type = T_BOOLEAN, .bool_val = true};
@@ -21,11 +39,53 @@ static object False = {.type = T_BOOLEAN, .bool_val = false};
 object *NIL = NULL;
 
 object *new_error(char *fmt, ...);
-char *to_string(object *o);
+char *to_string(object *o, ...);
 const char *object_type_name(object_type type);
 const char *type_name(object *o);
-void del_object(object *o);
+void free_object(object *o);
+
 object *assert_fun_arg_type(char *func, object *o, int i, object_type type);
+
+#define ERR_RET(e)                                                             \
+    do {                                                                       \
+        object *err = e;                                                       \
+        if (err) {                                                             \
+            return err;                                                        \
+        }                                                                      \
+    } while (0)
+
+#define ERR_GOTO(e)                                                            \
+    do {                                                                       \
+        object *err = e;                                                       \
+        if (err) {                                                             \
+            goto error;                                                        \
+        }                                                                      \
+    } while (0)
+
+
+
+object *ASSERT(bool cond, char *fmt, ...) {
+    if (!cond) {
+        va_list args;
+        va_start(args, fmt);
+        object *err = new_error(fmt, args);
+        va_end(args);
+        return err;
+    }
+    return NULL;
+}
+
+object *assert_fun_arg_type(char *func, object *o, int i, object_type type) {
+    if (o && !(o->type & type)) {
+        char *value = to_string(o);
+        object *err = new_error("Function '%s' passed incorrect type for "
+                                "argument %i. Got %s, Expected %s.",
+                                func, to_string(o), i, object_type_name(type));
+        my_free(value);
+        return err;
+    }
+    return NULL;
+}
 
 object *ref(object *o) {
     o->ref_count++;
@@ -33,7 +93,7 @@ object *ref(object *o) {
 }
 object *unref(object *o) {
     if (o && !(--o->ref_count)) {
-        del_object(o);
+        free_object(o);
         o = NIL;
     }
     return o;
@@ -74,7 +134,7 @@ symbol *lookup(parse_data *data, char *ident) {
         sym = *sym_p;
         if (!sym) {
             sym = my_malloc(sizeof(symbol));
-            sym->name = strdup(ident);
+            sym->name = my_strdup(ident);
             sym->hash_next = NULL;
             *sym_p = sym;
             break;
@@ -89,15 +149,14 @@ symbol *lookup(parse_data *data, char *ident) {
 object *new_symbol(symbol *s) {
     object *symbol = new_object(T_SYMBOL);
     symbol->symbol = s;
-    ref(symbol);
     return symbol;
 }
 
 pair *make_pair(object *car, object *cdr) {
-    pair *pair = my_malloc(sizeof(pair));
-    pair->car = car;
-    pair->cdr = cdr;
-    return pair;
+    pair *p = my_malloc(sizeof(pair));
+    p->car = car;
+    p->cdr = cdr;
+    return p;
 }
 
 object *cons(object *car, object *cdr) {
@@ -106,35 +165,32 @@ object *cons(object *car, object *cdr) {
     return pair;
 }
 
-object *car(object *pair) {
-    object *err = assert_fun_arg_type("car", pair, 0, T_PAIR);
-    if (err) {
-        return err;
-    }
-    return pair->pair->car;
+object *car(object *list) {
+    ERR_RET(assert_fun_arg_type("car", list, 0, T_PAIR));
+    return list->pair->car;
 }
 
-object *cdr(object *pair) {
-    object *err = assert_fun_arg_type("car", pair, 0, T_PAIR);
-    if (err) {
-        return err;
-    }
-    return pair->pair->cdr;
+object *setcar(object *list, object *car) {
+    ERR_RET(assert_fun_arg_type("setcar", list, 0, T_PAIR));
+    list->pair->car = car;
+    return NIL;
+}
+
+object *cdr(object *list) {
+    ERR_RET(assert_fun_arg_type("cdr", list, 0, T_PAIR));
+    return list->pair->cdr;
 }
 
 object *setcdr(object *list, object *cdr) {
-    object *err = assert_fun_arg_type("car", list, 0, T_PAIR);
-    if (err) {
-        return err;
-    }
+    ERR_RET(assert_fun_arg_type("setcdr", list, 0, T_PAIR));
     list->pair->cdr = cdr;
     return NIL;
 }
 
-void free_pair(pair *pair) {
-    del_object(pair->car);
-    del_object(pair->cdr);
-    free(pair);
+void free_pair(object *o) {
+    free_object(o->pair->car);
+    free_object(o->pair->cdr);
+    my_free(o->pair);
 }
 
 string *make_string(char *str, size_t size) {
@@ -151,9 +207,9 @@ object *new_string(string *s) {
     return str;
 }
 
-void free_string(string *s) {
-    free(s->str_p);
-    free(s);
+void free_string(object *s) {
+    my_free(s->str->str_p);
+    my_free(s->str);
 }
 
 error *make_error(char *fmt, ...) {
@@ -175,48 +231,48 @@ object *new_error(char *fmt, ...) {
     return err;
 }
 
-void free_error(error *e) {
-    free(e->msg);
-    free(e);
+void free_error(object *e) {
+    my_free(e->err->msg);
+    my_free(e->err);
 }
 
-object *new_primitive_proc(primitive_proc_ptr *proc, procedure procudure) {
+object *new_primitive_proc(primitive_proc_ptr *proc) {
     object *o = new_object(T_PRIMITIVE_PROC);
     primitive_proc *primitive = my_malloc(sizeof(primitive_proc));
     o->primitive_proc = primitive;
-    primitive->procedure = procudure;
     primitive->proc = proc;
     return o;
 }
 
-void free_primitive_proc(primitive_proc *proc) { free(proc); }
+void free_primitive_proc(object *o) { my_free(o->primitive_proc); }
 
-object *new_compound_proc(env *env, object *params, object *body,
-                          procedure procedure) {
+object *new_compound_proc(env *env, object *params, object *body) {
     object *o = new_object(T_COMPOUND_PROC);
     compound_proc *proc = my_malloc(sizeof(compound_proc));
     proc->parameters = params;
     proc->body = body;
     proc->env = env;
-    proc->procedure = procedure;
     o->compound_proc = proc;
     return o;
 }
 
-env *new_env(void) {
-    env *e = my_malloc(sizeof(env));
-    bzero(e, sizeof(env));
-    return e;
+void free_compound_proc(object *o) {
+    compound_proc *proc = o->compound_proc;
+    unref(proc->parameters);
+    unref(proc->body);
+    free_env(proc->env);
+    my_free(proc);
 }
 
-void del_env(env *e) {
+env *new_env(void) { return my_malloc(sizeof(env)); }
+
+void free_env(env *e) {
     for (int i = 0; i < e->count; i++) {
-        /* free(e->symbols[i]); */
         unref(e->objects[i]);
     }
-    free(e->symbols);
-    free(e->objects);
-    free(e);
+    my_free(e->symbols);
+    my_free(e->objects);
+    my_free(e);
 }
 
 object *env_get(env *e, symbol *sym) {
@@ -233,6 +289,20 @@ object *env_get(env *e, symbol *sym) {
     }
 }
 
+symbol *env_get_sym(env *e, object *o) {
+    for (int i = 0; i < e->count; i++) {
+        if (e->objects[i] == o) {
+            return e->symbols[i];
+        }
+    }
+
+    if (e->parent) {
+        return env_get_sym(e->parent, o);
+    } else {
+        return NULL;
+    }
+}
+
 void env_put(env *e, symbol *sym, object *obj) {
     for (int i = 0; i < e->count; i++) {
         if (e->symbols[i] == sym) {
@@ -245,9 +315,9 @@ void env_put(env *e, symbol *sym, object *obj) {
 #define ENV_INC 10
     if ((e->count % ENV_INC) == 0) {
         e->symbols =
-            realloc(e->symbols, sizeof(symbol *) * (ENV_INC + e->count));
+            my_realloc(e->symbols, sizeof(symbol *) * (ENV_INC + e->count));
         e->objects =
-            realloc(e->objects, sizeof(object *) * (ENV_INC + e->count));
+            my_realloc(e->objects, sizeof(object *) * (ENV_INC + e->count));
     }
 
     e->symbols[e->count] = sym;
@@ -255,33 +325,38 @@ void env_put(env *e, symbol *sym, object *obj) {
     e->count++;
 }
 
-void del_object(object *o) {
-    if (o == NIL || o->ref_count) {
+void free_object(object *o) {
+    if (!o || o->ref_count) {
         return;
     }
 
     switch (o->type) {
     case T_ERR:
-        free_error(o->err);
+        free_error(o);
         break;
     case T_STRING:
-        free_string(o->str);
+        free_string(o);
         break;
     case T_PAIR:
-        free_pair(o->pair);
+        free_pair(o);
+        break;
+    case T_PRIMITIVE_PROC:
+        free_primitive_proc(o);
+        break;
+    case T_COMPOUND_PROC:
+        free_compound_proc(o);
+    case T_SYMBOL:
         break;
     default:
         break;
     }
 
-    free(o);
+    my_free(o);
 }
-
-char *to_string(object *o);
 
 char *pair_to_string(object *pair) {
     int len = 2;
-    char *pair_str = malloc(len);
+    char *pair_str = my_malloc(len);
 
     strcat(pair_str, "(");
     object *o;
@@ -298,19 +373,28 @@ char *pair_to_string(object *pair) {
                 inc_len = 3;
                 cat_s = " . ";
             }
-        }        
-        
+        }
+
         len += strlen(s) + inc_len;
-        pair_str = realloc(pair_str, len);
+        pair_str = my_realloc(pair_str, len);
         strcat(pair_str, s);
         strcat(pair_str, cat_s);
-        free(s);
+        my_free(s);
     }
     strcat(pair_str, ")");
     return pair_str;
 }
 
-char *to_string(object *o) {
+char *to_string(object *o, ...) {
+
+    va_list args;
+    va_start(args, o);
+    env *e = va_arg(args, env *);
+    va_end(args);
+
+    if (!o) {
+        return my_strdup("");
+    }
 #define BUF_SIZE 4096
     char buf[BUF_SIZE] = {'\0'};
 
@@ -353,8 +437,11 @@ char *to_string(object *o) {
     case T_PRIMITIVE_PROC:
     case T_COMPOUND_PROC:
         fmt = "#<procedure %s>";
-        o_str = o->primitive_proc->procedure.name;
-        len += strlen(o_str) + strlen(fmt) - 2;
+        symbol *symbol = env_get_sym(e, o);
+        if (symbol) {
+            o_str = symbol->name;
+            len += strlen(o_str) + strlen(fmt) - 2;
+        }
         break;
     default:
         break;
@@ -363,18 +450,18 @@ char *to_string(object *o) {
     char *str = my_malloc(len);
     if (o_str) {
         snprintf(str, len, fmt, o_str);
+        if (o->type == T_PAIR) {
+            my_free(o_str);
+        }
     }
 
-    if (o->type == T_PAIR && o_str) {
-        free(o_str);
-    }
     return str;
 }
 
-void object_print(object *o) {
-    char *s = to_string(o);
+void object_print(object *o, env *e) {
+    char *s = to_string(o, e);
     printf("%s", s);
-    free(s);
+    my_free(s);
 }
 
 int list_len(object *list) {
@@ -396,47 +483,47 @@ object *proc_call(env *e, object *func, object *args) {
     int total = list_len(func->compound_proc->parameters);
 
     if (given != total) {
+        
     }
     return new_error("compound proc no impl", T_COMPOUND_PROC);
 }
 
-object *eval_pair(object *expr, env *env) {
-    object *o;
-    object *eval_expr = NIL;
-    object *pair_ptr = eval_expr;
-    for_each_list(o, expr) {
-        object *value = eval(o, env);
-        if (value->type == T_ERR) {
-            if (eval_expr != NIL) {
-                del_object(eval_expr);
-            }
-            return value;
-        }
+object *eval_list(object *expr, env *env) {
+    /* object *o; */
+    /* object *eval_expr = NIL; */
+    // 评估 顺序
+    /* object *pair_ptr = eval_expr; */
+    /* for_each_list(o, expr) { */
+    /*     object *value = eval(o, env); */
+    /*     if (value->type == T_ERR) { */
+    /*         if (eval_expr != NIL) { */
+    /*             free_object(eval_expr); */
+    /*         } */
+    /*         return value; */
+    /*     } */
 
-        object *pair = cons(value, NIL);
-        if (!eval_expr) {
-            eval_expr = pair_ptr = pair;
-        } else {
-            // TODO: set cdr
-            pair_ptr->pair->cdr = pair;
-            pair_ptr = pair;
-        }
-    }
+    /*     object *pair = cons(value, NIL); */
+    /*     if (!eval_expr) { */
+    /*         eval_expr = pair_ptr = pair; */
+    /*     } else { */
+    /*         // TODO: set cdr */
+    /*         pair_ptr->pair->cdr = pair; */
+    /*         pair_ptr = pair; */
+    /*     } */
+    /* } */
 
-    object *operator= car(eval_expr);
-    object *operands = cdr(eval_expr);
-
+    object *operator= eval(car(expr), env);
+    
     if (operator&& !(operator->type &(T_PRIMITIVE_PROC | T_COMPOUND_PROC))) {
-        del_object(eval_expr);
         char *s = to_string(operator);
         object *e =
             new_error("Exception: attempt to apply non-procedure %s", s);
-        free(s);
+        my_free(s);
         return e;
     }
 
+    object *operands = cdr(expr);
     object *ret = proc_call(env, operator, operands);
-    del_object(eval_expr);
     return ret;
 }
 
@@ -445,20 +532,18 @@ object *eval(object *exp, env *env) {
         return NULL;
     }
 
+    object *result = exp;
     if (exp->type == T_SYMBOL) {
-        return env_get(env, exp->symbol);
-    }  else if (exp->type == T_PAIR) {
-        return eval_pair(exp, env);
+        result = env_get(env, exp->symbol);
+    } else if (exp->type == T_PAIR) {
+        result = eval_list(exp, env);
     }
-    return exp;
+    return result;
 }
 
 void env_add_builtin(parse_data *data, env *env, char *name,
                      primitive_proc_ptr *proc) {
-
-    procedure procedure;
-    procedure.name = name;
-    env_put(env, lookup(data, name), new_primitive_proc(proc, procedure));
+    env_put(env, lookup(data, name), new_primitive_proc(proc));
 }
 
 const char *object_type_name(object_type type) {
@@ -491,44 +576,34 @@ const char *type_name(object *o) {
     return object_type_name(o->type);
 }
 
-object *assert_fun_arg_type(char *func, object *o, int i, object_type type) {
-    if (o && !(o->type & type)) {
-        char *value = to_string(o);
-        object *err = new_error("Function '%s' passed incorrect type for "
-                                "argument %i. Got %s, Expected %s.",
-                                func, to_string(o), i, object_type_name(type));
-        free(value);
-        return err;
-    }
-    return NULL;
-}
-
 object *builtin_op(env *e, object *args, char op) {
-    int i = 0;
+    object *first = eval(car(args), e);
+    /* setcar(args, first); */
+    ERR_RET(assert_fun_arg_type(&op, first, 0, T_FIXNUM | T_FLONUM));
+    int value = first->int_val;
 
-    int64_t value = car(args)->int_val;
     object *operand;
+    int i = 1;
     for_each_list(operand, cdr(args)) {
-        object *err = assert_fun_arg_type(&op, operand, i, T_FIXNUM | T_FLONUM);
-        if (err) {
-            return err;
-        }
-
+        object *o = eval(operand, e);
+        /* setcar(idx, o); */
+        ERR_RET(assert_fun_arg_type(&op, o, i, T_FIXNUM | T_FLONUM));
+        int eval_val = o->int_val;
         switch (op) {
         case '+':
-            value += operand->int_val;
+            value += eval_val;
             break;
         case '-':
-            value -= operand->int_val;
+            value -= eval_val;
             break;
         case '*':
-            value *= operand->int_val;
+            value *= eval_val;
             break;
         case '/':
-            if (operand->int_val == 0) {
+            if (eval_val == 0) {
                 return new_error("Division By Zero.");
             }
-            value /= operand->int_val;
+            value /= eval_val;
             break;
         }
 
@@ -550,16 +625,21 @@ object *builtin_define(env *e, object *args) {
         value = car(cdr(args));
     } else {
         variable = car(car(args));
-        if (variable->type == T_SYMBOL) {
+        if (variable->type != T_SYMBOL) {
             return new_error("invalid syntax");
         }
-        object *params = car(cdr(args));
-        object *body = cdr(args);
-        procedure procedure = {.name = variable->symbol->name};
+        object *params = cdr(car(args));
+        object *arg;
+        for_each_list(arg, params) {
+            ERR_RET(ASSERT(arg->type == T_SYMBOL, "invalid syntax"));
+        }
+
+        ref(params);
+        object *body = ref(cdr(args));
 
         env *env = new_env();
         env->parent = e;
-        value = new_compound_proc(env, params, body, procedure);
+        value = new_compound_proc(env, params, body);
     }
 
     env_put(e, variable->symbol, value);
@@ -571,4 +651,24 @@ void env_add_builtins(env *env, parse_data *parse_data) {
     env_add_builtin(parse_data, env, "-", builtin_sub);
     env_add_builtin(parse_data, env, "*", builtin_mul);
     env_add_builtin(parse_data, env, "/", builtin_div);
+
+    env_add_builtin(parse_data, env, "define", builtin_define);
+}
+
+void free_symbol(symbol *sym) {
+    while (sym) {
+        symbol *t = sym->hash_next;
+        my_free(sym->name);
+        my_free(sym);
+        sym = t;
+    }
+}
+
+void free_lisp(parse_data *data) {
+    symbol **symtab = data->symtab;
+    symbol *sym;
+    for (int i = 0; i < NHASH; ++i) {
+        free_symbol(symtab[i]);
+    }
+    my_free(data->symtab);
 }
