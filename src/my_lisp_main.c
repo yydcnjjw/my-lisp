@@ -5,6 +5,8 @@
 #include "my_lisp.tab.h"
 #include "my_lisp.lex.h"
 
+static bool IS_EOF = false;
+
 void yyerror(YYLTYPE *yylloc, yyscan_t scanner, parse_data *data, const char *s,
              ...) {
     va_list ap;
@@ -15,6 +17,10 @@ void yyerror(YYLTYPE *yylloc, yyscan_t scanner, parse_data *data, const char *s,
     vfprintf(stderr, s, ap);
     fprintf(stderr, "\n");
     va_end(ap);
+}
+
+void eof_handle(void) {
+    IS_EOF = true;
 }
 
 void init_parse_data(parse_data *data) {
@@ -50,21 +56,24 @@ int main(int argc, char *argv[]) {
 
     yyset_debug(1, scanner);
 
-    for (;;) {
+    while (!IS_EOF) {
         int ret = yyparse(scanner, &data);
-        if (data.ast && !ret) {
-            object *value = eval(data.ast, env);
+        if (!ret) {
+            object* value = eval(ref(data.ast), env);
+            printf("eval: ");
+            object_print(data.ast, env);
+            printf("\n");
+            
             object_print(value, env);
             printf("\n");
-            free_object(data.ast);
-            if (value != data.ast) {
-                free_object(value);                
-            }
+            unref(value);
+            unref(data.ast);
             data.ast = NULL;
         } else {
             break;
         }
     }
+    
     yylex_destroy(scanner);
     free_env(env);
     free_lisp(&data);

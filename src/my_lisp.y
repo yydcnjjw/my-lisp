@@ -34,6 +34,8 @@
 %token character
 %token <str> STRING
 
+%token END_OF_FILE
+
 %type <obj> number boolean symbol string list_item datum lexeme_datum compound_datum list
 
 %token EOL
@@ -41,8 +43,8 @@
 %start exp
 
 %%
-exp:
-| datum EOL { data->ast = $1; YYACCEPT; }
+exp: datum { data->ast = $1; YYACCEPT; }
+| END_OF_FILE { eof_handle(); YYACCEPT; }
 ;
 
 datum: lexeme_datum
@@ -78,14 +80,15 @@ list_item: datum { $$ = cons($1, NIL); }
 | datum list_item { $$ = cons($1, $2); }
 ;
 
-list: LP list_item RP { $$= $2;}
-| LP datum PERIOD datum RP { $$ = cons($2, $4); }
+list: LP list_item RP { $$ = $2;}
 | LP list_item PERIOD datum RP {
     object *o;
     for_each_list(o, $2) {
-        if (!cdr(idx)) {
+        object *next = cdr(idx);
+        if (!next) {
             setcdr(idx, $4);
         }
+        unref(next);
     }
     $$ = $2;
  }

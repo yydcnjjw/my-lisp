@@ -10,6 +10,7 @@ typedef enum {
     T_COMPOUND_PROC = 0x2,
     T_FIXNUM = 0x4,
     T_FLONUM = 0x8,
+    T_NUMBER = T_FIXNUM | T_FLONUM,
     T_BOOLEAN = 0x10,
     T_SYMBOL = 0x20,
     T_STRING = 0x40,
@@ -55,12 +56,12 @@ typedef struct error_t error;
 struct compound_proc_t {
     object *parameters;
     object *body;
+    int param_count;
     env *env;
 };
 typedef struct compound_proc_t compound_proc;
 
-typedef object *
-primitive_proc_ptr(env *env, object *args);
+typedef object *primitive_proc_ptr(env *env, object *args);
 
 struct primitive_proc_t {
     primitive_proc_ptr *proc;
@@ -121,12 +122,19 @@ void *my_malloc(size_t size);
 
 void free_lisp(parse_data *data);
 
-#define for_each_list(o, list)                                                 \
-    for (object *idx = list;                                                   \
-         ((o) = (!(idx) ? NULL                                                 \
-                        : ((idx) && (idx)->type == T_PAIR) ? car((idx))        \
-                                                           : idx)) != NULL;    \
-         (idx) = (idx)->type == T_PAIR ? cdr((idx)) : NULL)
+void eof_handle(void);
 
+object *ref(object *o);
+object *unref(object *o);
+
+#define BIND(var, val) object *var = ref((val))
+
+#define for_each_list(o, list)                                                 \
+    for (object *idx = ref(list);                                              \
+         ((o) = (!idx ? NULL                                                   \
+                      : idx->type == T_PAIR ? car(ref(idx)) : ref(idx))) !=    \
+         NULL;                                                                 \
+         unref(idx), unref(o),                                                 \
+                idx = idx->type == T_PAIR ? cdr(ref(idx)) : NULL)
 
 #endif /* MY_LISP_H */

@@ -19,6 +19,9 @@ SUBSEQUENT ({INITIAL}|{DIGIT}|{SPECIAL_SUBSEQUENT})
 PECULIAR_IDENTIFIER "+"|"-"|"..."|"->"{SUBSEQUENT}*
 IDENTIFIER {INITIAL}{SUBSEQUENT}*
 
+EOL	\n|\r\n|\n\r|\r
+WS	{EOL}|[[:blank:]]
+
 %x string
 
 %%
@@ -88,11 +91,10 @@ IDENTIFIER {INITIAL}{SUBSEQUENT}*
 "#F" |
 "#f" { return BOOLEAN_F; }
 
-\n { return EOL; }
-
-[ \t] { }
+;.*$
+{WS}* { }
 
 . { yyerror(yylloc, yyscanner, yyextra, "Mystery character %c\n", *yytext); }
 
-<<EOF>> { yyterminate(); }
+<<EOF>> { return END_OF_FILE; }
 %%
