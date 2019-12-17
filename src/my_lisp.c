@@ -45,10 +45,16 @@ void free_object(object *o);
 object *assert_fun_arg_type(char *func, object *o, int i, object_type type);
 
 static inline object *is_error(object *o) {
-    return o && o->type == T_ERR ? o : NIL;
+    bool ret = o && o->type == T_ERR;
+    if (ret) {
+        return o;
+    } else {
+        unref(o);
+        return NIL;
+    }
 }
 
-#define ERROR(e) for (object *error = is_error(e); error; error = NULL)
+#define ERROR(e) for (object *error = is_error(e); error; error = NIL)
 
 #define ERR_RET(e)                                                             \
     do {                                                                       \
@@ -58,15 +64,16 @@ static inline object *is_error(object *o) {
 #define ASSERT(cond, fmt, ...) !(cond) ? new_error(fmt, ##__VA_ARGS__) : NIL
 
 object *assert_fun_arg_type(char *func, object *o, int i, object_type type) {
-    object *err = NIL;
     if (!o || !(o->type & type)) {
         char *value = to_string(o);
-        err = new_error("Function %s passed incorrect type for "
-                        "argument %d. Got %s, Expected %s.",
-                        func, i, value, object_type_name(type));
+        object *err = new_error("Function %s passed incorrect type for "
+                                "argument %d. Got %s, Expected %s.",
+                                func, i, value, object_type_name(type));
         my_free(value);
+        return err;
     }
-    return err;
+    unref(o);
+    return NIL;
 }
 
 object *ref(object *o) {
@@ -152,66 +159,68 @@ object *cons(object *car, object *cdr) {
 
 // ref pass
 object *car(object *list) {
-    object *ret_val;
-    ERROR(assert_fun_arg_type("car", list, 0, T_PAIR)) {
+    object *ret_val = NIL;
+
+    ERROR(assert_fun_arg_type("car", ref(list), 0, T_PAIR)) {
         ret_val = error;
         goto ret;
     }
-    
+
     ret_val = ref(list->pair->car);
-    
- ret:
+ret:
     unref(list);
     return ret_val;
 }
 
 // ref pass
 object *setcar(object *list, object *car) {
-    object *ret_val;
-    ERROR(assert_fun_arg_type("setcar", list, 0, T_PAIR)) {
+    object *ret_val = NIL;
+
+    ERROR(assert_fun_arg_type("setcar", ref(list), 0, T_PAIR)) {
         ret_val = error;
+        unref(car);
         goto ret;
     }
-    
-    unref(list->pair->car);
-    list->pair->car = ref(car);
 
- ret:
+    unref(list->pair->car);
+    list->pair->car = car;
+
+ret:
     unref(list);
-    unref(car);
-    return NIL;
+    return ret_val;
 }
 
 // ref pass
 object *cdr(object *list) {
-    object *ret_val;
-    ERROR(assert_fun_arg_type("cdr", list, 0, T_PAIR)) {
+    object *ret_val = NIL;
+
+    ERROR(assert_fun_arg_type("cdr", ref(list), 0, T_PAIR)) {
         ret_val = error;
         goto ret;
     }
-    
+
     ret_val = ref(list->pair->cdr);
-    
- ret:
+ret:
     unref(list);
     return ret_val;
 }
 
 // ref pass
 object *setcdr(object *list, object *cdr) {
-    object *ret_val;
-    ERROR(assert_fun_arg_type("setcdr", list, 0, T_PAIR)) {
+    object *ret_val = NIL;
+
+    ERROR(assert_fun_arg_type("setcdr", ref(list), 0, T_PAIR)) {
         ret_val = error;
+        unref(cdr);
         goto ret;
     }
-    
-    unref(list->pair->cdr);
-    list->pair->cdr = ref(cdr);
 
- ret:
+    unref(list->pair->cdr);
+    list->pair->cdr = cdr;
+
+ret:
     unref(list);
-    unref(cdr);
-    return NIL;
+    return ret_val;
 }
 
 void free_pair(object *o) {
@@ -272,17 +281,41 @@ void free_primitive_proc(object *o) { my_free(o->primitive_proc); }
 object *new_compound_proc(env *env, object *params, object *body) {
     int i = 0;
     object *arg;
-    for_each_list(arg, params) {
-        ERR_RET(ASSERT(arg->type == T_SYMBOL,
-                       "compound proc: must be pass symbol as params"));
-        i++;
+    symbol *varg = NULL;
+
+    if (params && params->type != T_PAIR) {
+        varg = params->symbol;
+        unref(params);
+        params = NIL;
+    } else {
+        for_each_list(arg, params) {
+            ERROR(ASSERT(arg->type == T_SYMBOL,
+                         "compound proc: must be pass symbol as params")) {
+                unref(params);
+                unref(body);
+                free_env(env);
+                unref(idx);
+                unref(arg);
+                return error;
+            }
+
+            object *next = cdr(ref(idx));
+            if (next && next->type != T_PAIR) {
+                varg = next->symbol;
+                setcdr(ref(idx), NIL);
+            }
+            unref(next);
+
+            i++;
+        }
     }
 
     object *o = new_object(T_COMPOUND_PROC);
     compound_proc *proc = my_malloc(sizeof(compound_proc));
     proc->param_count = i;
-    proc->parameters = ref(params);
-    proc->body = ref(body);
+    proc->varg = varg;
+    proc->parameters = params;
+    proc->body = body;
     proc->env = env;
     o->compound_proc = proc;
     return o;
@@ -315,7 +348,7 @@ object *env_get(env *e, symbol *sym) {
     }
 
     if (e->parent) {
-        return ref(env_get(e->parent, sym));
+        return env_get(e->parent, sym);
     } else {
         return new_error("Exception: variable %s is not bound", sym->name);
     }
@@ -324,6 +357,7 @@ object *env_get(env *e, symbol *sym) {
 symbol *env_get_sym(env *e, object *o) {
     for (int i = 0; i < e->count; i++) {
         if (e->objects[i] == o) {
+            unref(o);
             return e->symbols[i];
         }
     }
@@ -386,14 +420,14 @@ void free_object(object *o) {
     my_free(o);
 }
 
-char *pair_to_string(object *pair) {
+char *list_to_string(object *list) {
     int len = 3; /* default "()" total 3 with memory */
-    char *pair_str = my_malloc(len);
+    char *list_str = my_malloc(len);
 
-    strcat(pair_str, "(");
+    strcat(list_str, "(");
     object *o;
-    for_each_list(o, pair) {
-        char *s = to_string(o);
+    for_each_list(o, list) {
+        char *s = to_string(ref(o));
         int inc_len = 0;
         object *next = idx->type == T_PAIR ? cdr(ref(idx)) : NULL;
         char *cat_s = "";
@@ -405,17 +439,18 @@ char *pair_to_string(object *pair) {
                 inc_len = 3;
                 cat_s = " . ";
             }
+            unref(next);
         }
-        unref(next);
 
         len += strlen(s) + inc_len;
-        pair_str = my_realloc(pair_str, len);
-        strcat(pair_str, s);
-        strcat(pair_str, cat_s);
+        list_str = my_realloc(list_str, len);
+        strcat(list_str, s);
+        strcat(list_str, cat_s);
         my_free(s);
     }
-    strcat(pair_str, ")");
-    return pair_str;
+    strcat(list_str, ")");
+    unref(list);
+    return list_str;
 }
 
 char *to_string(object *o, ...) {
@@ -425,6 +460,7 @@ char *to_string(object *o, ...) {
     va_end(args);
 
     if (!o) {
+        unref(o);
         return my_strdup("NIL");
     }
 #define BUF_SIZE 4096
@@ -436,7 +472,7 @@ char *to_string(object *o, ...) {
 
     switch (o->type) {
     case T_PAIR:
-        o_str = pair_to_string(o);
+        o_str = list_to_string(ref(o));
         len += strlen(o_str);
         break;
     case T_SYMBOL: {
@@ -469,7 +505,7 @@ char *to_string(object *o, ...) {
     case T_PRIMITIVE_PROC:
     case T_COMPOUND_PROC:
         fmt = "#<procedure %s>";
-        symbol *symbol = env_get_sym(e, o);
+        symbol *symbol = env_get_sym(e, ref(o));
         if (symbol) {
             o_str = symbol->name;
             len += strlen(o_str) + strlen(fmt) - 2;
@@ -490,7 +526,7 @@ char *to_string(object *o, ...) {
     /* len = snprintf(buf, BUF_SIZE, "%s(ref=%d)", str, o->ref_count); */
     /* str = my_realloc(str, len); */
     /* memcpy(str, buf, len); */
-
+    unref(o);
     return str;
 }
 
@@ -506,10 +542,10 @@ int list_len(object *list) {
     int i = 0;
     object *o;
     for_each_list(o, list) { i++; }
+    unref(list);
     return i;
 }
 
-// ref pass
 object *proc_call(env *e, object *func, object *args) {
     object *ret_val = NIL;
     assert(func && func->type & (T_PRIMITIVE_PROC | T_COMPOUND_PROC));
@@ -517,57 +553,72 @@ object *proc_call(env *e, object *func, object *args) {
         ret_val = func->primitive_proc->proc(e, ref(args));
     } else {
         env *func_env = func->compound_proc->env;
-        object *params = func->compound_proc->parameters;
+        object *params = ref(func->compound_proc->parameters);
         int total = func->compound_proc->param_count;
-        object *given;
-        object *param;
 
-        bool is_varg = false;
-        object *varg_sym = NIL;
+        symbol *varg_sym = func->compound_proc->varg;
         object *varg_val = NIL;
         object *ptr = NIL;
+        object *given;
+        int given_num = 0;
+        object *param = NIL;
         for_each_list(given, args) {
-            if (is_varg) {
+            ERROR(ASSERT(params || varg_sym,
+                         "Function passed too many arguments. "
+                         "Expected %d.",
+                         total)) {
+                unref(idx);
+                unref(given);
+                unref(params);
+                ret_val = error;
+                goto ret;
+            }
+
+            // varg handle
+            if (!params) {
                 if (!varg_val) {
-                    varg_val = ptr = cons(given, NIL);
+                    varg_val = cons(ref(given), NIL);
+                    ptr = ref(varg_val);
                 } else {
-                    object *o = cons(given, NIL);
-                    setcdr(ptr, o);
-                    ptr = o;
+                    setcdr(ref(ptr), cons(ref(given), NIL));
+                    ptr = cdr(ptr);
                 }
                 continue;
             }
 
-            ERR_RET(ASSERT(params,
-                           "Function passed too many arguments. "
-                           "Expected %d.",
-                           total));
+            unref(param);
+            param = car(ref(params));
 
-            param = car(params);
-
-            ERR_RET(ASSERT(param,
-                           "Function passed too many arguments. "
-                           "Expected %d.",
-                           total));
-
-            params = cdr(params);
-
-            if (params && params->type != T_PAIR) {
-                varg_sym = params;
-                is_varg = true;
+            object *eval_val = eval(ref(given), e);
+            ERROR(ref(eval_val)) {
+                unref(idx);
+                unref(given);
+                unref(param);
+                unref(params);                
+                unref(eval_val);
+                ret_val = error;
+                goto ret;
             }
-
-            object *eval_val = eval(given, e);
-            ERR_RET(eval_val);
             env_put(func_env, param->symbol, eval_val);
+            given_num++;
+            params = cdr(params);
+        }
+        
+        unref(param);
+        unref(params);
+        unref(ptr);
+        
+        env_put(func_env, varg_sym, varg_val);
+        
+        ERROR(ASSERT(total == given_num, "Exception: incorrect number of arguments")) {
+            ret_val = error;
+            goto ret;
         }
 
-        if (is_varg) {
-            env_put(func_env, varg_sym->symbol, varg_val);
-        }
-        ret_val = eval(func->compound_proc->body, func_env);
+        ret_val = eval(ref(func->compound_proc->body), func_env);
     }
-    
+
+ret:
     unref(func);
     unref(args);
     return ret_val;
@@ -575,44 +626,36 @@ object *proc_call(env *e, object *func, object *args) {
 
 // ref pass
 object *eval_list(object *expr, env *env) {
-
-    object *ret_val = NIL;
-
     object *operator= eval(car(ref(expr)), env);
 
     if (operator&& !(operator->type &(T_PRIMITIVE_PROC | T_COMPOUND_PROC))) {
         char *s = to_string(operator);
-        ret_val = new_error("Exception: attempt to apply non-procedure %s", s);
+        object *err =
+            new_error("Exception: attempt to apply non-procedure %s", s);
         my_free(s);
-        goto ret;
+        unref(expr);
+        return err;
     }
 
-    object *operands = cdr(ref(expr));
-    ret_val = proc_call(env, ref(operator), ref(operands));
-
-    unref(operands);
-ret:
-    unref(operator);
-    unref(expr);
-    return ret_val;
+    object *operands = cdr(expr);
+    return proc_call(env, operator, operands);
 }
 
-// ref pass
 object *eval(object *exp, env *env) {
-    if (!exp) {
-        return NIL;
-    }
+    object *ret_val = NIL;
 
-    object *result;
-    if (exp->type == T_SYMBOL) {
-        result = env_get(env, exp->symbol);
+    if (!exp) {
+        ret_val = NIL;
+        /* unref(exp); */
+    } else if (exp->type == T_SYMBOL) {
+        ret_val = env_get(env, exp->symbol);
+        unref(exp);
     } else if (exp->type == T_PAIR) {
-        result = eval_list(ref(exp), env);
+        ret_val = eval_list(exp, env);
     } else {
-        result = ref(exp);
+        ret_val = exp;
     }
-    unref(exp);
-    return result;
+    return ret_val;
 }
 
 void env_add_builtin(parse_data *data, env *env, char *name,
@@ -654,31 +697,32 @@ const char *type_name(object *o) {
 // ref pass
 object *builtin_op(env *e, object *args, char op) {
     object *ret_val = NIL;
-    
+
     object *first = eval(car(ref(args)), e);
-    ERROR(first) {
+    ERROR(ref(first)) {
+        unref(first);
         ret_val = error;
         goto ret;
     }
-    
+
     int value = first->int_val;
     unref(first);
-    
-    object *operand;
+
     int i = 1;
-    
+    object *operand;
     object *rest_args = cdr(ref(args));
     for_each_list(operand, rest_args) {
         object *o = eval(ref(operand), e);
-        ERROR(o) {
+        ERROR(ref(o)) {
             unref(idx);
             unref(operand);
+            unref(o);
             ret_val = error;
             goto loop_exit;
         }
-        
+
         char op_s[] = {op, '\0'};
-        ERROR(assert_fun_arg_type(op_s, o, i, T_NUMBER)) {
+        ERROR(assert_fun_arg_type(op_s, ref(o), i, T_NUMBER)) {
             unref(idx);
             unref(operand);
             unref(o);
@@ -709,11 +753,11 @@ object *builtin_op(env *e, object *args, char op) {
         i++;
     }
     ret_val = new_fix_number(value);
-    
- loop_exit:
+
+loop_exit:
     unref(rest_args);
 
- ret:
+ret:
     unref(args);
     return ret_val;
 }
@@ -729,20 +773,24 @@ object *builtin_div(env *e, object *a) { return builtin_op(e, a, '/'); }
 
 // ref pass
 object *builtin_define(env *e, object *args) {
+    object *ret_val = NIL;
+
     object *variable = car(ref(args));
     object *value = NIL;
     if (variable->type == T_SYMBOL) {
         value = cdr(ref(args));
         if (value != NIL) {
             unref(value);
-            value = car(cdr(ref(args)));
+            value = eval(car(cdr(ref(args))), e);
         } else {
             unref(value);
             value = NIL;
         }
     } else {
+        unref(variable);
         variable = car(car(ref(args)));
         ERROR(ASSERT(variable->type == T_SYMBOL, "invalid syntax")) {
+            ret_val = error;
             goto ret;
         }
 
@@ -751,21 +799,20 @@ object *builtin_define(env *e, object *args) {
         env *env = new_env();
         env->parent = e;
         value = new_compound_proc(env, params, body);
-        ERROR(value) {
-            free_env(env);
-            unref(params);
-            unref(body);
+        ERROR(ref(value)) {
+            unref(value);
+            ret_val = error;
             goto ret;
         }
     }
 
     env_put(e, variable->symbol, value);
 
- ret:
+ret:
     unref(args);
     unref(variable);
-    
-    return NIL;
+
+    return ret_val;
 }
 
 void env_add_builtins(env *env, parse_data *parse_data) {

@@ -66,8 +66,6 @@ int main(int argc, char *argv[]) {
             
             object_print(value, env);
             printf("\n");
-            unref(value);
-            unref(data.ast);
             data.ast = NULL;
         } else {
             break;

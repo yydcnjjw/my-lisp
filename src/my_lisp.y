@@ -78,20 +78,10 @@ compound_datum: list
 
 list_item: datum { $$ = cons($1, NIL); }
 | datum list_item { $$ = cons($1, $2); }
+| datum PERIOD datum { $$ = cons($1, $3); }
 ;
 
 list: LP list_item RP { $$ = $2;}
-| LP list_item PERIOD datum RP {
-    object *o;
-    for_each_list(o, $2) {
-        object *next = cdr(idx);
-        if (!next) {
-            setcdr(idx, $4);
-        }
-        unref(next);
-    }
-    $$ = $2;
- }
 | LSB list_item RSB { $$ = $2; }
 | LP RP { $$ = NIL; }
 | LSB RSB { $$ = NIL; }

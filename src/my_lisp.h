@@ -57,6 +57,7 @@ struct compound_proc_t {
     object *parameters;
     object *body;
     int param_count;
+    symbol *varg;
     env *env;
 };
 typedef struct compound_proc_t compound_proc;
@@ -134,7 +135,6 @@ object *unref(object *o);
          ((o) = (!idx ? NULL                                                   \
                       : idx->type == T_PAIR ? car(ref(idx)) : ref(idx))) !=    \
          NULL;                                                                 \
-         unref(idx), unref(o),                                                 \
-                idx = idx->type == T_PAIR ? cdr(ref(idx)) : NULL)
+         unref(o), idx = idx->type == T_PAIR ? cdr(idx) : (unref(idx), NULL))
 
 #endif /* MY_LISP_H */
