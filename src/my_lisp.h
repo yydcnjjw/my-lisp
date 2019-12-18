@@ -1,6 +1,7 @@
 #ifndef MY_LISP_H
 #define MY_LISP_H
 
+#include <assert.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -8,6 +9,7 @@
 typedef enum {
     T_PRIMITIVE_PROC = 0x1,
     T_COMPOUND_PROC = 0x2,
+    T_PROCEDURE = T_PRIMITIVE_PROC | T_COMPOUND_PROC,
     T_FIXNUM = 0x4,
     T_FLONUM = 0x8,
     T_NUMBER = T_FIXNUM | T_FLONUM,
@@ -16,7 +18,8 @@ typedef enum {
     T_STRING = 0x40,
     T_PAIR = 0x80,
     T_CHARACTER = 0x100,
-    T_ERR = 0x200
+    T_ERR = 0x200,
+    T_NULL = 0x400,
 } object_type;
 
 typedef struct object_t object;
@@ -105,18 +108,17 @@ object *cons(object *car, object *cdr);
 object *car(object *pair);
 object *cdr(object *pair);
 object *setcdr(object *list, object *cdr);
+
 object *NIL;
 
 env *new_env(void);
 void free_env(env *e);
 
-void env_add_builtins(env *, parse_data *);
+void env_add_primitives(env *, parse_data *);
 
 #define NHASH 9997
 
 object *eval(object *exp, env *env);
-
-void free_object(object *o);
 void object_print(object *o, env *);
 
 void *my_malloc(size_t size);
@@ -128,7 +130,14 @@ void eof_handle(void);
 object *ref(object *o);
 object *unref(object *o);
 
-#define BIND(var, val) object *var = ref((val))
+/* static inline object *has_next(object *idx) { */
+/*     return !idx ? NULL : idx->type == T_PAIR ? car(idx) : idx; */
+/* } */
+
+/* static inline object *next(object *idx) { */
+/*     assert(idx); */
+/*     return idx->type == T_PAIR ? cdr(idx) : (unref(idx), NULL); */
+/* } */
 
 #define for_each_list(o, list)                                                 \
     for (object *idx = ref(list);                                              \

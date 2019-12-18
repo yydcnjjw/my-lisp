@@ -1,7 +1,6 @@
 #include "my_lisp.h"
 #include <my_lisp.tab.h>
 
-#include <assert.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -32,16 +31,14 @@ void *my_realloc(void *p, size_t size) {
 
 char *my_strdup(char *s) { return strdup(s); }
 
-static object True = {.type = T_BOOLEAN, .bool_val = true};
-static object False = {.type = T_BOOLEAN, .bool_val = false};
+static object True = {.type = T_BOOLEAN, .bool_val = true, .ref_count = 1};
+static object False = {.type = T_BOOLEAN, .bool_val = false, .ref_count = 1};
 object *NIL = NULL;
 
 object *new_error(const char *fmt, ...);
 char *to_string(object *o, ...);
-const char *object_type_name(object_type type);
-const char *type_name(object *o);
 void free_object(object *o);
-
+const char *object_type_name(object_type type);
 object *assert_fun_arg_type(char *func, object *o, int i, object_type type);
 
 static inline object *is_error(object *o) {
@@ -55,11 +52,6 @@ static inline object *is_error(object *o) {
 }
 
 #define ERROR(e) for (object *error = is_error(e); error; error = NIL)
-
-#define ERR_RET(e)                                                             \
-    do {                                                                       \
-        ERROR(e) { return error; }                                             \
-    } while (0)
 
 #define ASSERT(cond, fmt, ...) !(cond) ? new_error(fmt, ##__VA_ARGS__) : NIL
 
@@ -98,7 +90,7 @@ static inline object *new_object(object_type type) {
     return o;
 }
 
-object *new_boolean(bool val) { return val ? &True : &False; }
+object *new_boolean(bool val) { return val ? ref(&True) : ref(&False); }
 
 object *new_fix_number(int64_t val) {
     object *fix_number = new_object(T_FIXNUM);
@@ -157,7 +149,6 @@ object *cons(object *car, object *cdr) {
     return pair;
 }
 
-// ref pass
 object *car(object *list) {
     object *ret_val = NIL;
 
@@ -172,7 +163,6 @@ ret:
     return ret_val;
 }
 
-// ref pass
 object *setcar(object *list, object *car) {
     object *ret_val = NIL;
 
@@ -190,7 +180,6 @@ ret:
     return ret_val;
 }
 
-// ref pass
 object *cdr(object *list) {
     object *ret_val = NIL;
 
@@ -205,7 +194,6 @@ ret:
     return ret_val;
 }
 
-// ref pass
 object *setcdr(object *list, object *cdr) {
     object *ret_val = NIL;
 
@@ -280,17 +268,19 @@ void free_primitive_proc(object *o) { my_free(o->primitive_proc); }
 
 object *new_compound_proc(env *env, object *params, object *body) {
     int i = 0;
-    object *arg;
     symbol *varg = NULL;
 
+    object *param_list = NIL;
     if (params && params->type != T_PAIR) {
         varg = params->symbol;
-        unref(params);
-        params = NIL;
     } else {
+        object *ptr = NIL;
+        object *arg = NIL;
         for_each_list(arg, params) {
             ERROR(ASSERT(arg->type == T_SYMBOL,
                          "compound proc: must be pass symbol as params")) {
+                unref(param_list);
+                unref(ptr);
                 unref(params);
                 unref(body);
                 free_env(env);
@@ -302,19 +292,32 @@ object *new_compound_proc(env *env, object *params, object *body) {
             object *next = cdr(ref(idx));
             if (next && next->type != T_PAIR) {
                 varg = next->symbol;
-                setcdr(ref(idx), NIL);
+                unref(next);
+                unref(idx);
+                unref(arg);
+                break;
             }
             unref(next);
 
+            if (!param_list) {
+                param_list = cons(ref(arg), NIL);
+                ptr = ref(param_list);
+            } else {
+                setcdr(ref(ptr), cons(ref(arg), NIL));
+                ptr = cdr(ptr);
+            }
+
             i++;
         }
+        unref(ptr);        
     }
+    unref(params);
 
     object *o = new_object(T_COMPOUND_PROC);
     compound_proc *proc = my_malloc(sizeof(compound_proc));
     proc->param_count = i;
     proc->varg = varg;
-    proc->parameters = params;
+    proc->parameters = param_list;
     proc->body = body;
     proc->env = env;
     o->compound_proc = proc;
@@ -461,7 +464,7 @@ char *to_string(object *o, ...) {
 
     if (!o) {
         unref(o);
-        return my_strdup("NIL");
+        return my_strdup("()");
     }
 #define BUF_SIZE 4096
     char buf[BUF_SIZE] = {'\0'};
@@ -559,7 +562,7 @@ object *proc_call(env *e, object *func, object *args) {
         symbol *varg_sym = func->compound_proc->varg;
         object *varg_val = NIL;
         object *ptr = NIL;
-        object *given;
+        object *given = NIL;
         int given_num = 0;
         object *param = NIL;
         for_each_list(given, args) {
@@ -594,7 +597,7 @@ object *proc_call(env *e, object *func, object *args) {
                 unref(idx);
                 unref(given);
                 unref(param);
-                unref(params);                
+                unref(params);
                 unref(eval_val);
                 ret_val = error;
                 goto ret;
@@ -603,14 +606,15 @@ object *proc_call(env *e, object *func, object *args) {
             given_num++;
             params = cdr(params);
         }
-        
+
         unref(param);
         unref(params);
         unref(ptr);
-        
+
         env_put(func_env, varg_sym, varg_val);
-        
-        ERROR(ASSERT(total == given_num, "Exception: incorrect number of arguments")) {
+
+        ERROR(ASSERT(total == given_num,
+                     "Exception: incorrect number of arguments")) {
             ret_val = error;
             goto ret;
         }
@@ -624,7 +628,6 @@ ret:
     return ret_val;
 }
 
-// ref pass
 object *eval_list(object *expr, env *env) {
     object *operator= eval(car(ref(expr)), env);
 
@@ -658,8 +661,8 @@ object *eval(object *exp, env *env) {
     return ret_val;
 }
 
-void env_add_builtin(parse_data *data, env *env, char *name,
-                     primitive_proc_ptr *proc) {
+void env_add_primitive(parse_data *data, env *env, char *name,
+                       primitive_proc_ptr *proc) {
     env_put(env, lookup(data, name), new_primitive_proc(proc));
 }
 
@@ -694,8 +697,7 @@ const char *type_name(object *o) {
     return object_type_name(o->type);
 }
 
-// ref pass
-object *builtin_op(env *e, object *args, char op) {
+object *primitive_op(env *e, object *args, char op) {
     object *ret_val = NIL;
 
     object *first = eval(car(ref(args)), e);
@@ -762,17 +764,15 @@ ret:
     return ret_val;
 }
 
-// ref pass
-object *builtin_add(env *e, object *a) { return builtin_op(e, a, '+'); }
-// ref pass
-object *builtin_sub(env *e, object *a) { return builtin_op(e, a, '-'); }
-// ref pass
-object *builtin_mul(env *e, object *a) { return builtin_op(e, a, '*'); }
-// ref pass
-object *builtin_div(env *e, object *a) { return builtin_op(e, a, '/'); }
+object *primitive_add(env *e, object *a) { return primitive_op(e, a, '+'); }
 
-// ref pass
-object *builtin_define(env *e, object *args) {
+object *primitive_sub(env *e, object *a) { return primitive_op(e, a, '-'); }
+
+object *primitive_mul(env *e, object *a) { return primitive_op(e, a, '*'); }
+
+object *primitive_div(env *e, object *a) { return primitive_op(e, a, '/'); }
+
+object *primitive_define(env *e, object *args) {
     object *ret_val = NIL;
 
     object *variable = car(ref(args));
@@ -815,13 +815,107 @@ ret:
     return ret_val;
 }
 
-void env_add_builtins(env *env, parse_data *parse_data) {
-    env_add_builtin(parse_data, env, "+", builtin_add);
-    env_add_builtin(parse_data, env, "-", builtin_sub);
-    env_add_builtin(parse_data, env, "*", builtin_mul);
-    env_add_builtin(parse_data, env, "/", builtin_div);
+object *is_type(object *o, object_type type) {
+    object *ret_val = NIL;
 
-    env_add_builtin(parse_data, env, "define", builtin_define);
+    if (!o) {
+        if (type == T_NULL) {
+            ret_val = ref(&True);
+        } else {
+            ret_val = ref(&False);
+        }
+    } else if (o->type == T_ERR) {
+        ret_val = ref(o);
+    } else if (o->type & type) {
+        ret_val = ref(&True);
+    } else {
+        ret_val = ref(&False);
+    }
+
+    unref(o);
+    return ret_val;
+}
+
+object *assert_fun_args_count(char *fun, object *args, int count) {
+    if (list_len(args) != count) {
+        return new_error("Exception: incorrect argument count in call %s", fun);
+    } else {
+        return NIL;
+    }
+}
+
+object *primitive_is_type(env *e, object *args, char *func, object_type type) {
+    ERROR(assert_fun_args_count(func, ref(args), 1)) {
+        unref(args);
+        return error;
+    }
+    return is_type(eval(car(args), e), type);
+}
+
+object *primitive_is_boolean(env *e, object *args) {
+    return primitive_is_type(e, args, "boolean?", T_BOOLEAN);
+}
+
+object *primitive_is_pair(env *e, object *args) {
+    return primitive_is_type(e, args, "pair?", T_PAIR);
+}
+
+object *primitive_is_null(env *e, object *args) {
+    return primitive_is_type(e, args, "null?", T_NULL);
+}
+
+object *primitive_is_number(env *e, object *args) {
+    return primitive_is_type(e, args, "number?", T_NUMBER);
+}
+
+object *primitive_is_string(env *e, object *args) {
+    return primitive_is_type(e, args, "string?", T_STRING);
+}
+
+object *primitive_is_procedure(env *e, object *args) {
+    return primitive_is_type(e, args, "procedure?", T_PROCEDURE);
+}
+
+object *primitive_is_symbol(env *e, object *args) {
+    return primitive_is_type(e, args, "symbol?", T_SYMBOL);
+}
+
+object *primitive_quote(env *e, object *args) {
+    if (!args) {
+        /* unref(args); */
+        return NIL;
+    }
+    ERROR(assert_fun_args_count("quote", ref(args), 1)) {
+        unref(args);
+        return error;
+    }
+    return car(args);
+}
+
+object *primitive_cond(env *e, object *args) {
+    return args;
+}
+
+void env_add_primitives(env *env, parse_data *parse_data) {
+    env_add_primitive(parse_data, env, "boolean?", primitive_is_boolean);
+    env_add_primitive(parse_data, env, "number?", primitive_is_number);
+    env_add_primitive(parse_data, env, "string?", primitive_is_string);
+    env_add_primitive(parse_data, env, "procedure?", primitive_is_procedure);
+    env_add_primitive(parse_data, env, "pair?", primitive_is_pair);
+    env_add_primitive(parse_data, env, "null?", primitive_is_null);
+    env_add_primitive(parse_data, env, "symbol?", primitive_is_symbol);
+    
+    // todo
+    env_add_primitive(parse_data, env, "char?", primitive_is_boolean);
+    env_add_primitive(parse_data, env, "vector?", primitive_is_boolean);
+    
+    env_add_primitive(parse_data, env, "+", primitive_add);
+    env_add_primitive(parse_data, env, "-", primitive_sub);
+    env_add_primitive(parse_data, env, "*", primitive_mul);
+    env_add_primitive(parse_data, env, "/", primitive_div);
+
+    env_add_primitive(parse_data, env, "define", primitive_define);
+    env_add_primitive(parse_data, env, "quote", primitive_quote);
 }
 
 void free_symbol(symbol *sym) {

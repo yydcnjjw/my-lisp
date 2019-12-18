@@ -36,7 +36,7 @@
 
 %token END_OF_FILE
 
-%type <obj> number boolean symbol string list_item datum lexeme_datum compound_datum list
+%type <obj> number boolean symbol string list_item datum lexeme_datum compound_datum list abbreviation
 
 %token EOL
 
@@ -85,10 +85,18 @@ list: LP list_item RP { $$ = $2;}
 | LSB list_item RSB { $$ = $2; }
 | LP RP { $$ = NIL; }
 | LSB RSB { $$ = NIL; }
-// | abbreviation
+| abbreviation
 ;
 
-abbreviation: abbrev_prefix datum
+abbreviation: APOSTROPHE datum {
+    object *quote = new_symbol(lookup(data, "quote"));
+    if ($2 == NIL) {
+        $$ = cons(quote, NIL);
+    } else {
+        $$ = cons(quote, cons($2, NIL));
+    }
+
+ }
 ;
 
 abbrev_prefix: APOSTROPHE

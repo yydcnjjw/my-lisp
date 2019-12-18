@@ -42,7 +42,7 @@ int main(int argc, char *argv[]) {
     yyscan_t scanner;
 
     env *env = new_env();
-    env_add_builtins(env, &data);
+    env_add_primitives(env, &data);
 
     if (yylex_init_extra(&data, &scanner)) {
         perror("init alloc failed");
