@@ -309,7 +309,7 @@ object *new_compound_proc(env *env, object *params, object *body) {
 
             i++;
         }
-        unref(ptr);        
+        unref(ptr);
     }
     unref(params);
 
@@ -549,11 +549,11 @@ int list_len(object *list) {
     return i;
 }
 
-object *proc_call(env *e, object *func, object *args) {
+object *proc_call(env *e, object *func, object *args, parse_data *data) {
     object *ret_val = NIL;
     assert(func && func->type & (T_PRIMITIVE_PROC | T_COMPOUND_PROC));
     if (func->type == T_PRIMITIVE_PROC) {
-        ret_val = func->primitive_proc->proc(e, ref(args));
+        ret_val = func->primitive_proc->proc(e, ref(args), data);
     } else {
         env *func_env = func->compound_proc->env;
         object *params = ref(func->compound_proc->parameters);
@@ -592,7 +592,7 @@ object *proc_call(env *e, object *func, object *args) {
             unref(param);
             param = car(ref(params));
 
-            object *eval_val = eval(ref(given), e);
+            object *eval_val = eval(ref(given), e, data);
             ERROR(ref(eval_val)) {
                 unref(idx);
                 unref(given);
@@ -619,7 +619,7 @@ object *proc_call(env *e, object *func, object *args) {
             goto ret;
         }
 
-        ret_val = eval(ref(func->compound_proc->body), func_env);
+        ret_val = eval(ref(func->compound_proc->body), func_env, data);
     }
 
 ret:
@@ -628,8 +628,8 @@ ret:
     return ret_val;
 }
 
-object *eval_list(object *expr, env *env) {
-    object *operator= eval(car(ref(expr)), env);
+object *eval_list(object *expr, env *env, parse_data *data) {
+    object *operator= eval(car(ref(expr)), env, data);
 
     if (operator&& !(operator->type &(T_PRIMITIVE_PROC | T_COMPOUND_PROC))) {
         char *s = to_string(operator);
@@ -641,10 +641,10 @@ object *eval_list(object *expr, env *env) {
     }
 
     object *operands = cdr(expr);
-    return proc_call(env, operator, operands);
+    return proc_call(env, operator, operands, data);
 }
 
-object *eval(object *exp, env *env) {
+object *eval(object *exp, env *env, parse_data *data) {
     object *ret_val = NIL;
 
     if (!exp) {
@@ -654,7 +654,7 @@ object *eval(object *exp, env *env) {
         ret_val = env_get(env, exp->symbol);
         unref(exp);
     } else if (exp->type == T_PAIR) {
-        ret_val = eval_list(exp, env);
+        ret_val = eval_list(exp, env, data);
     } else {
         ret_val = exp;
     }
@@ -697,10 +697,10 @@ const char *type_name(object *o) {
     return object_type_name(o->type);
 }
 
-object *primitive_op(env *e, object *args, char op) {
+object *primitive_op(env *e, object *args, char op, parse_data *data) {
     object *ret_val = NIL;
 
-    object *first = eval(car(ref(args)), e);
+    object *first = eval(car(ref(args)), e, data);
     ERROR(ref(first)) {
         unref(first);
         ret_val = error;
@@ -714,7 +714,7 @@ object *primitive_op(env *e, object *args, char op) {
     object *operand;
     object *rest_args = cdr(ref(args));
     for_each_list(operand, rest_args) {
-        object *o = eval(ref(operand), e);
+        object *o = eval(ref(operand), e, data);
         ERROR(ref(o)) {
             unref(idx);
             unref(operand);
@@ -764,15 +764,23 @@ ret:
     return ret_val;
 }
 
-object *primitive_add(env *e, object *a) { return primitive_op(e, a, '+'); }
+object *primitive_add(env *e, object *a, parse_data *data) {
+    return primitive_op(e, a, '+', data);
+}
 
-object *primitive_sub(env *e, object *a) { return primitive_op(e, a, '-'); }
+object *primitive_sub(env *e, object *a, parse_data *data) {
+    return primitive_op(e, a, '-', data);
+}
 
-object *primitive_mul(env *e, object *a) { return primitive_op(e, a, '*'); }
+object *primitive_mul(env *e, object *a, parse_data *data) {
+    return primitive_op(e, a, '*', data);
+}
 
-object *primitive_div(env *e, object *a) { return primitive_op(e, a, '/'); }
+object *primitive_div(env *e, object *a, parse_data *data) {
+    return primitive_op(e, a, '/', data);
+}
 
-object *primitive_define(env *e, object *args) {
+object *primitive_define(env *e, object *args, parse_data *data) {
     object *ret_val = NIL;
 
     object *variable = car(ref(args));
@@ -781,7 +789,7 @@ object *primitive_define(env *e, object *args) {
         value = cdr(ref(args));
         if (value != NIL) {
             unref(value);
-            value = eval(car(cdr(ref(args))), e);
+            value = eval(car(cdr(ref(args))), e, data);
         } else {
             unref(value);
             value = NIL;
@@ -795,11 +803,9 @@ object *primitive_define(env *e, object *args) {
         }
 
         object *params = cdr(car(ref(args)));
-        object *body = car(cdr(ref(args)));
+        object *begin = new_symbol(lookup(data, "begin"));
+        object *body = cons(begin, cdr(ref(args)));
 
-
-        /* object *begin = new_symbol(lookup(, char *ident)) */
-        
         env *env = new_env();
         env->parent = e;
         value = new_compound_proc(env, params, body);
@@ -857,43 +863,44 @@ object *assert_fun_args_count_range(char *fun, object *args, int min, int max) {
     }
 }
 
-object *primitive_is_type(env *e, object *args, char *func, object_type type) {
+object *primitive_is_type(env *e, object *args, char *func, object_type type,
+                          parse_data *data) {
     ERROR(assert_fun_args_count(func, ref(args), 1)) {
         unref(args);
         return error;
     }
-    return is_type(eval(car(args), e), type);
+    return is_type(eval(car(args), e, data), type);
 }
 
-object *primitive_is_boolean(env *e, object *args) {
-    return primitive_is_type(e, args, "boolean?", T_BOOLEAN);
+object *primitive_is_boolean(env *e, object *args, parse_data *data) {
+    return primitive_is_type(e, args, "boolean?", T_BOOLEAN, data);
 }
 
-object *primitive_is_pair(env *e, object *args) {
-    return primitive_is_type(e, args, "pair?", T_PAIR);
+object *primitive_is_pair(env *e, object *args, parse_data *data) {
+    return primitive_is_type(e, args, "pair?", T_PAIR, data);
 }
 
-object *primitive_is_null(env *e, object *args) {
-    return primitive_is_type(e, args, "null?", T_NULL);
+object *primitive_is_null(env *e, object *args, parse_data *data) {
+    return primitive_is_type(e, args, "null?", T_NULL, data);
 }
 
-object *primitive_is_number(env *e, object *args) {
-    return primitive_is_type(e, args, "number?", T_NUMBER);
+object *primitive_is_number(env *e, object *args, parse_data *data) {
+    return primitive_is_type(e, args, "number?", T_NUMBER, data);
 }
 
-object *primitive_is_string(env *e, object *args) {
-    return primitive_is_type(e, args, "string?", T_STRING);
+object *primitive_is_string(env *e, object *args, parse_data *data) {
+    return primitive_is_type(e, args, "string?", T_STRING, data);
 }
 
-object *primitive_is_procedure(env *e, object *args) {
-    return primitive_is_type(e, args, "procedure?", T_PROCEDURE);
+object *primitive_is_procedure(env *e, object *args, parse_data *data) {
+    return primitive_is_type(e, args, "procedure?", T_PROCEDURE, data);
 }
 
-object *primitive_is_symbol(env *e, object *args) {
-    return primitive_is_type(e, args, "symbol?", T_SYMBOL);
+object *primitive_is_symbol(env *e, object *args, parse_data *data) {
+    return primitive_is_type(e, args, "symbol?", T_SYMBOL, data);
 }
 
-object *primitive_quote(env *e, object *args) {
+object *primitive_quote(env *e, object *args, parse_data *data) {
     if (!args) {
         /* unref(args); */
         return NIL;
@@ -905,9 +912,9 @@ object *primitive_quote(env *e, object *args) {
     return car(args);
 }
 
-object *primitive_if(env *e, object *args) {
+object *primitive_if(env *e, object *args, parse_data *data) {
     object *ret_val = NIL;
-    
+
     size_t arg_len = list_len(ref(args));
 
     ERROR(ASSERT(2 <= arg_len && arg_len <= 3, "Exception: invalid syntax")) {
@@ -915,22 +922,22 @@ object *primitive_if(env *e, object *args) {
         goto ret;
     }
 
-    object *test = eval(car(ref(args)), e);
+    object *test = eval(car(ref(args)), e, data);
     object *consequent = car(cdr(ref(args)));
     object *alternate = arg_len == 3 ? car(cdr(cdr(ref(args)))) : NIL;
 
     if (test != &False) {
         // true
         unref(alternate);
-        ret_val = eval(consequent, e);
+        ret_val = eval(consequent, e, data);
     } else {
         // false
         unref(consequent);
-        ret_val = alternate ? eval(alternate, e) : NIL;
+        ret_val = alternate ? eval(alternate, e, data) : NIL;
     }
     unref(test);
-    
- ret:
+
+ret:
     unref(args);
     return ret_val;
 }
@@ -940,7 +947,7 @@ bool object_symbol_eq(object *sym, char *s) {
         unref(sym);
         return false;
     }
-    
+
     bool ret_val = false;
     if (!strcmp(sym->symbol->name, s)) {
         ret_val = true;
@@ -951,7 +958,7 @@ bool object_symbol_eq(object *sym, char *s) {
     return ret_val;
 }
 
-object *primitive_cond(env *e, object *args) {
+object *primitive_cond(env *e, object *args, parse_data *data) {
     object *clause = NIL;
     object *ptr = NIL;
     object *cond_to_if = NIL;
@@ -964,29 +971,42 @@ object *primitive_cond(env *e, object *args) {
                 unref(clause);
                 unref(rest);
                 unref(predicate);
-                unref(args);                
+                unref(args);
                 return new_error("else clause isn't last");
             }
 
             if (!cond_to_if) {
-                
             }
             /* unref(rest); */
         }
-        
     }
     return args;
 }
 
-object *primitive_begin(env *e, object *args) {
+object *primitive_begin(env *e, object *args, parse_data *data) {
     object *ret_val = NIL;
     object *form = NIL;
     for_each_list(form, args) {
         unref(ret_val);
-        ret_val = eval(ref(form), e);
+        ret_val = eval(ref(form), e, data);
     }
     unref(args);
     return ret_val;
+}
+
+object *primitive_car(env *e, object *args, parse_data *data) {
+    ERROR(assert_fun_args_count("car", ref(args), 1)) {
+        unref(args);
+        return error;
+    }
+    return car(eval(car(args), e, data));
+}
+object *primitive_cdr(env *e, object *args, parse_data *data) {
+    ERROR(assert_fun_args_count("cdr", ref(args), 1)) {
+        unref(args);
+        return error;
+    }
+    return cdr(eval(car(args), e, data));
 }
 
 void env_add_primitives(env *env, parse_data *parse_data) {
@@ -997,11 +1017,11 @@ void env_add_primitives(env *env, parse_data *parse_data) {
     env_add_primitive(parse_data, env, "pair?", primitive_is_pair);
     env_add_primitive(parse_data, env, "null?", primitive_is_null);
     env_add_primitive(parse_data, env, "symbol?", primitive_is_symbol);
-    
+
     // todo
     env_add_primitive(parse_data, env, "char?", primitive_is_boolean);
     env_add_primitive(parse_data, env, "vector?", primitive_is_boolean);
-    
+
     env_add_primitive(parse_data, env, "+", primitive_add);
     env_add_primitive(parse_data, env, "-", primitive_sub);
     env_add_primitive(parse_data, env, "*", primitive_mul);
@@ -1012,7 +1032,10 @@ void env_add_primitives(env *env, parse_data *parse_data) {
 
     env_add_primitive(parse_data, env, "begin", primitive_begin);
     env_add_primitive(parse_data, env, "if", primitive_if);
-    
+
+    env_add_primitive(parse_data, env, "car", primitive_car);
+    env_add_primitive(parse_data, env, "cdr", primitive_cdr);
+
     env_add_primitive(parse_data, env, "cond", primitive_cond);
 }
 

@@ -65,7 +65,10 @@ struct compound_proc_t {
 };
 typedef struct compound_proc_t compound_proc;
 
-typedef object *primitive_proc_ptr(env *env, object *args);
+struct parse_data;
+typedef struct parse_data parse_data;
+
+typedef object *primitive_proc_ptr(env *env, object *args, parse_data *data);
 
 struct primitive_proc_t {
     primitive_proc_ptr *proc;
@@ -94,7 +97,6 @@ struct parse_data {
     object *ast;
     symbol **symtab;
 };
-typedef struct parse_data parse_data;
 
 symbol *lookup(parse_data *, char *);
 object *new_boolean(bool val);
@@ -118,7 +120,7 @@ void env_add_primitives(env *, parse_data *);
 
 #define NHASH 9997
 
-object *eval(object *exp, env *env);
+object *eval(object *exp, env *env, parse_data *);
 void object_print(object *o, env *);
 
 void *my_malloc(size_t size);
