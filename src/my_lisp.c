@@ -53,7 +53,7 @@ static inline object *is_error(object *o) {
 
 #define ERROR(e) for (object *error = is_error(e); error; error = NIL)
 
-#define ASSERT(cond, fmt, ...) !(cond) ? new_error(fmt, ##__VA_ARGS__) : NIL
+#define ASSERT(cond, fmt, ...) (!(cond) ? new_error(fmt, ##__VA_ARGS__) : NIL)
 
 object *assert_fun_arg_type(char *func, object *o, int i, object_type type) {
     if (!o || !(o->type & type)) {
@@ -796,6 +796,10 @@ object *primitive_define(env *e, object *args) {
 
         object *params = cdr(car(ref(args)));
         object *body = car(cdr(ref(args)));
+
+
+        /* object *begin = new_symbol(lookup(, char *ident)) */
+        
         env *env = new_env();
         env->parent = e;
         value = new_compound_proc(env, params, body);
@@ -838,6 +842,15 @@ object *is_type(object *o, object_type type) {
 
 object *assert_fun_args_count(char *fun, object *args, int count) {
     if (list_len(args) != count) {
+        return new_error("Exception: incorrect argument count in call %s", fun);
+    } else {
+        return NIL;
+    }
+}
+
+object *assert_fun_args_count_range(char *fun, object *args, int min, int max) {
+    int size = list_len(args);
+    if (min <= size && size <= max) {
         return new_error("Exception: incorrect argument count in call %s", fun);
     } else {
         return NIL;
@@ -892,8 +905,88 @@ object *primitive_quote(env *e, object *args) {
     return car(args);
 }
 
+object *primitive_if(env *e, object *args) {
+    object *ret_val = NIL;
+    
+    size_t arg_len = list_len(ref(args));
+
+    ERROR(ASSERT(2 <= arg_len && arg_len <= 3, "Exception: invalid syntax")) {
+        ret_val = error;
+        goto ret;
+    }
+
+    object *test = eval(car(ref(args)), e);
+    object *consequent = car(cdr(ref(args)));
+    object *alternate = arg_len == 3 ? car(cdr(cdr(ref(args)))) : NIL;
+
+    if (test != &False) {
+        // true
+        unref(alternate);
+        ret_val = eval(consequent, e);
+    } else {
+        // false
+        unref(consequent);
+        ret_val = alternate ? eval(alternate, e) : NIL;
+    }
+    unref(test);
+    
+ ret:
+    unref(args);
+    return ret_val;
+}
+
+bool object_symbol_eq(object *sym, char *s) {
+    if (!sym || sym->type != T_SYMBOL) {
+        unref(sym);
+        return false;
+    }
+    
+    bool ret_val = false;
+    if (!strcmp(sym->symbol->name, s)) {
+        ret_val = true;
+    } else {
+        ret_val = false;
+    }
+    unref(sym);
+    return ret_val;
+}
+
 object *primitive_cond(env *e, object *args) {
+    object *clause = NIL;
+    object *ptr = NIL;
+    object *cond_to_if = NIL;
+    for_each_list(clause, args) {
+        object *predicate = car(ref(clause));
+        if (object_symbol_eq(ref(predicate), "test")) {
+            object *rest = cdr(ref(idx));
+            if (rest) {
+                unref(idx);
+                unref(clause);
+                unref(rest);
+                unref(predicate);
+                unref(args);                
+                return new_error("else clause isn't last");
+            }
+
+            if (!cond_to_if) {
+                
+            }
+            /* unref(rest); */
+        }
+        
+    }
     return args;
+}
+
+object *primitive_begin(env *e, object *args) {
+    object *ret_val = NIL;
+    object *form = NIL;
+    for_each_list(form, args) {
+        unref(ret_val);
+        ret_val = eval(ref(form), e);
+    }
+    unref(args);
+    return ret_val;
 }
 
 void env_add_primitives(env *env, parse_data *parse_data) {
@@ -916,6 +1009,11 @@ void env_add_primitives(env *env, parse_data *parse_data) {
 
     env_add_primitive(parse_data, env, "define", primitive_define);
     env_add_primitive(parse_data, env, "quote", primitive_quote);
+
+    env_add_primitive(parse_data, env, "begin", primitive_begin);
+    env_add_primitive(parse_data, env, "if", primitive_if);
+    
+    env_add_primitive(parse_data, env, "cond", primitive_cond);
 }
 
 void free_symbol(symbol *sym) {
