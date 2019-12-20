@@ -120,7 +120,7 @@ void env_add_primitives(env *, parse_data *);
 
 #define NHASH 9997
 
-object *eval(object *exp, env *env, parse_data *);
+object *eval(object *exp, env *env, parse_data *data);
 void object_print(object *o, env *);
 
 void *my_malloc(size_t size);
@@ -141,11 +141,14 @@ object *unref(object *o);
 /*     return idx->type == T_PAIR ? cdr(idx) : (unref(idx), NULL); */
 /* } */
 
-#define for_each_list(o, list)                                                 \
-    for (object *idx = ref(list);                                              \
+#define for_each_list_entry(o, list)                                           \
+    for (object *idx = list;                                                   \
          ((o) = (!idx ? NULL                                                   \
                       : idx->type == T_PAIR ? car(ref(idx)) : ref(idx))) !=    \
          NULL;                                                                 \
          unref(o), idx = idx->type == T_PAIR ? cdr(idx) : (unref(idx), NULL))
+
+#define for_each_list(list)                                                    \
+    for (object *idx = ref(list); idx && idx->type == T_PAIR; idx = cdr(idx))
 
 #endif /* MY_LISP_H */

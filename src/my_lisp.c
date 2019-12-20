@@ -276,12 +276,11 @@ object *new_compound_proc(env *env, object *params, object *body) {
     } else {
         object *ptr = NIL;
         object *arg = NIL;
-        for_each_list(arg, params) {
+        for_each_list_entry(arg, params) {
             ERROR(ASSERT(arg->type == T_SYMBOL,
                          "compound proc: must be pass symbol as params")) {
                 unref(param_list);
                 unref(ptr);
-                unref(params);
                 unref(body);
                 free_env(env);
                 unref(idx);
@@ -311,7 +310,6 @@ object *new_compound_proc(env *env, object *params, object *body) {
         }
         unref(ptr);
     }
-    unref(params);
 
     object *o = new_object(T_COMPOUND_PROC);
     compound_proc *proc = my_malloc(sizeof(compound_proc));
@@ -429,7 +427,7 @@ char *list_to_string(object *list) {
 
     strcat(list_str, "(");
     object *o;
-    for_each_list(o, list) {
+    for_each_list_entry(o, list) {
         char *s = to_string(ref(o));
         int inc_len = 0;
         object *next = idx->type == T_PAIR ? cdr(ref(idx)) : NULL;
@@ -506,14 +504,19 @@ char *to_string(object *o, ...) {
         o_str = o->err->msg;
         break;
     case T_PRIMITIVE_PROC:
-    case T_COMPOUND_PROC:
-        fmt = "#<procedure %s>";
+    case T_COMPOUND_PROC: {
         symbol *symbol = env_get_sym(e, ref(o));
         if (symbol) {
+            fmt = "#<procedure %s>";            
             o_str = symbol->name;
             len += strlen(o_str) + strlen(fmt) - 2;
+        } else {
+            fmt = "#<procedure>";
+            o_str = "";
+            len += strlen(fmt);
         }
-        break;
+        break;        
+    }
     default:
         break;
     }
@@ -526,9 +529,6 @@ char *to_string(object *o, ...) {
         }
     }
 
-    /* len = snprintf(buf, BUF_SIZE, "%s(ref=%d)", str, o->ref_count); */
-    /* str = my_realloc(str, len); */
-    /* memcpy(str, buf, len); */
     unref(o);
     return str;
 }
@@ -544,7 +544,7 @@ int list_len(object *list) {
 
     int i = 0;
     object *o;
-    for_each_list(o, list) { i++; }
+    for_each_list_entry(o, list) { i++; }
     unref(list);
     return i;
 }
@@ -565,7 +565,7 @@ object *proc_call(env *e, object *func, object *args, parse_data *data) {
         object *given = NIL;
         int given_num = 0;
         object *param = NIL;
-        for_each_list(given, args) {
+        for_each_list_entry(given, args) {
             ERROR(ASSERT(params || varg_sym,
                          "Function passed too many arguments. "
                          "Expected %d.",
@@ -713,7 +713,7 @@ object *primitive_op(env *e, object *args, char op, parse_data *data) {
     int i = 1;
     object *operand;
     object *rest_args = cdr(ref(args));
-    for_each_list(operand, rest_args) {
+    for_each_list_entry(operand, rest_args) {
         object *o = eval(ref(operand), e, data);
         ERROR(ref(o)) {
             unref(idx);
@@ -958,35 +958,106 @@ bool object_symbol_eq(object *sym, char *s) {
     return ret_val;
 }
 
+object *make_if(object *test, object *consequent, object *alternate, parse_data *data) {
+    assert(consequent);
+    
+    object *ret_val;
+    object *sym_if = new_symbol(lookup(data, "if"));
+    if (alternate) {
+        ret_val = cons(sym_if, cons(test, cons(consequent, alternate)));
+    } else {
+        ret_val = cons(sym_if, cons(test, consequent));
+    }
+    return ret_val;
+}
+
 object *primitive_cond(env *e, object *args, parse_data *data) {
+    object *ret_val = NIL;
+    
     object *clause = NIL;
-    object *ptr = NIL;
+    
+    object *sym_begin = new_symbol(lookup(data, "begin"));
+    
+    object *test = NIL;
+    object *consequent = NIL;
+    
     object *cond_to_if = NIL;
-    for_each_list(clause, args) {
-        object *predicate = car(ref(clause));
-        if (object_symbol_eq(ref(predicate), "test")) {
+    object *ptr = NIL;
+    
+    for_each_list_entry(clause, args) {
+        test = car(ref(clause));
+        if (object_symbol_eq(ref(test), "else")) {
             object *rest = cdr(ref(idx));
-            if (rest) {
+            ERROR(ASSERT(!rest, "else clause isn't last")) {
                 unref(idx);
                 unref(clause);
                 unref(rest);
-                unref(predicate);
-                unref(args);
-                return new_error("else clause isn't last");
-            }
 
-            if (!cond_to_if) {
+                ret_val = error;
+                goto ret;
             }
             /* unref(rest); */
+
+            object *expression = cons(sym_begin, cdr(ref(clause)));
+            if (!cond_to_if) {
+                cond_to_if = expression;
+            } else {
+                setcdr(ref(ptr), expression);
+            }
+            unref(idx);
+            unref(clause);
+            break;
+        }
+
+        /* test = eval(test, e, data); */
+        object *arrow = car(cdr(ref(clause)));
+        if (object_symbol_eq(arrow, "=>")) {
+            // (<test> => <expression>)
+            // expression = procedure object
+
+            ERROR(ASSERT(list_len(ref(clause)) == 3,
+                         "Exception: misplaced aux keyword =>")) {
+                unref(idx);
+                unref(clause);
+
+                ret_val = error;
+                goto ret;
+            }
+
+            consequent = cons(car(cdr(cdr(ref(clause)))), test);
+        } else {
+            // (<test> => <expression>*)
+            consequent = cons(sym_begin, car(cdr(ref(clause))));
+        }
+
+        if (!cond_to_if) {
+            cond_to_if = make_if(test, consequent, NIL, data);
+            ptr = cdr(cdr(ref(cond_to_if)));
+        } else {
+            setcdr(ref(ptr), make_if(test, consequent, NIL, data));
+            ptr = cdr(cdr(cdr(ptr)));
         }
     }
-    return args;
+
+    object_print(ref(cond_to_if), e);
+    printf("\n");
+    ret_val = eval(ref(cond_to_if), e, data);
+    
+ ret:
+    unref(cond_to_if);
+    unref(ptr);
+    unref(test);
+    unref(consequent);
+    unref(args);
+    unref(sym_begin);
+    
+    return ret_val;
 }
 
 object *primitive_begin(env *e, object *args, parse_data *data) {
     object *ret_val = NIL;
     object *form = NIL;
-    for_each_list(form, args) {
+    for_each_list_entry(form, args) {
         unref(ret_val);
         ret_val = eval(ref(form), e, data);
     }
@@ -1001,12 +1072,17 @@ object *primitive_car(env *e, object *args, parse_data *data) {
     }
     return car(eval(car(args), e, data));
 }
+
 object *primitive_cdr(env *e, object *args, parse_data *data) {
     ERROR(assert_fun_args_count("cdr", ref(args), 1)) {
         unref(args);
         return error;
     }
     return cdr(eval(car(args), e, data));
+}
+
+object *primitive_lambda(env *e, object *args, parse_data *data) {
+    
 }
 
 void env_add_primitives(env *env, parse_data *parse_data) {
@@ -1036,6 +1112,9 @@ void env_add_primitives(env *env, parse_data *parse_data) {
     env_add_primitive(parse_data, env, "car", primitive_car);
     env_add_primitive(parse_data, env, "cdr", primitive_cdr);
 
+    env_add_primitive(parse_data, env, "lambda", primitive_lambda);
+    
+    // todo
     env_add_primitive(parse_data, env, "cond", primitive_cond);
 }
 
