@@ -283,6 +283,7 @@ object *new_compound_proc(env *env, object *params, object *body) {
                 unref(ptr);
                 unref(body);
                 free_env(env);
+                unref(params);
                 unref(idx);
                 unref(arg);
                 return error;
@@ -310,6 +311,7 @@ object *new_compound_proc(env *env, object *params, object *body) {
         }
         unref(ptr);
     }
+    unref(params);
 
     object *o = new_object(T_COMPOUND_PROC);
     compound_proc *proc = my_malloc(sizeof(compound_proc));
@@ -366,6 +368,7 @@ symbol *env_get_sym(env *e, object *o) {
     if (e->parent) {
         return env_get_sym(e->parent, o);
     } else {
+        unref(o);
         return NULL;
     }
 }
@@ -412,6 +415,7 @@ void free_object(object *o) {
         break;
     case T_COMPOUND_PROC:
         free_compound_proc(o);
+        break;
     case T_SYMBOL:
         break;
     default:
@@ -507,7 +511,7 @@ char *to_string(object *o, ...) {
     case T_COMPOUND_PROC: {
         symbol *symbol = env_get_sym(e, ref(o));
         if (symbol) {
-            fmt = "#<procedure %s>";            
+            fmt = "#<procedure %s>";
             o_str = symbol->name;
             len += strlen(o_str) + strlen(fmt) - 2;
         } else {
@@ -515,7 +519,7 @@ char *to_string(object *o, ...) {
             o_str = "";
             len += strlen(fmt);
         }
-        break;        
+        break;
     }
     default:
         break;
@@ -604,7 +608,7 @@ object *proc_call(env *e, object *func, object *args, parse_data *data) {
             }
             env_put(func_env, param->symbol, eval_val);
             given_num++;
-            params = cdr(params);
+            params = car(cdr(params));
         }
 
         unref(param);
@@ -958,32 +962,34 @@ bool object_symbol_eq(object *sym, char *s) {
     return ret_val;
 }
 
-object *make_if(object *test, object *consequent, object *alternate, parse_data *data) {
+object *make_if(object *test, object *consequent, object *alternate,
+                parse_data *data) {
     assert(consequent);
-    
+
     object *ret_val;
     object *sym_if = new_symbol(lookup(data, "if"));
     if (alternate) {
-        ret_val = cons(sym_if, cons(test, cons(consequent, alternate)));
+        ret_val =
+            cons(sym_if, cons(test, cons(consequent, cons(alternate, NIL))));
     } else {
-        ret_val = cons(sym_if, cons(test, consequent));
+        ret_val = cons(sym_if, cons(test, cons(consequent, NIL)));
     }
     return ret_val;
 }
 
 object *primitive_cond(env *e, object *args, parse_data *data) {
     object *ret_val = NIL;
-    
+
     object *clause = NIL;
-    
+
     object *sym_begin = new_symbol(lookup(data, "begin"));
-    
+
     object *test = NIL;
     object *consequent = NIL;
-    
+    object *ptr;
+
     object *cond_to_if = NIL;
-    object *ptr = NIL;
-    
+
     for_each_list_entry(clause, args) {
         test = car(ref(clause));
         if (object_symbol_eq(ref(test), "else")) {
@@ -991,21 +997,24 @@ object *primitive_cond(env *e, object *args, parse_data *data) {
             ERROR(ASSERT(!rest, "else clause isn't last")) {
                 unref(idx);
                 unref(clause);
+
                 unref(rest);
+                unref(test);
 
                 ret_val = error;
                 goto ret;
             }
             /* unref(rest); */
 
-            object *expression = cons(sym_begin, cdr(ref(clause)));
+            object *expression = cons(ref(sym_begin), cdr(ref(clause)));
             if (!cond_to_if) {
                 cond_to_if = expression;
             } else {
-                setcdr(ref(ptr), expression);
+                setcdr(ref(ptr), cons(expression, NIL));
             }
             unref(idx);
             unref(clause);
+            unref(test);
             break;
         }
 
@@ -1014,7 +1023,7 @@ object *primitive_cond(env *e, object *args, parse_data *data) {
         if (object_symbol_eq(arrow, "=>")) {
             // (<test> => <expression>)
             // expression = procedure object
-
+            // TODO: impl
             ERROR(ASSERT(list_len(ref(clause)) == 3,
                          "Exception: misplaced aux keyword =>")) {
                 unref(idx);
@@ -1027,30 +1036,26 @@ object *primitive_cond(env *e, object *args, parse_data *data) {
             consequent = cons(car(cdr(cdr(ref(clause)))), test);
         } else {
             // (<test> => <expression>*)
-            consequent = cons(sym_begin, car(cdr(ref(clause))));
+            consequent = cons(ref(sym_begin), cdr(ref(clause)));
         }
 
         if (!cond_to_if) {
             cond_to_if = make_if(test, consequent, NIL, data);
             ptr = cdr(cdr(ref(cond_to_if)));
         } else {
-            setcdr(ref(ptr), make_if(test, consequent, NIL, data));
-            ptr = cdr(cdr(cdr(ptr)));
+            setcdr(ref(ptr), cons(make_if(test, consequent, NIL, data), NIL));
+            ptr = cdr(cdr(car(cdr(ptr))));
         }
     }
 
-    object_print(ref(cond_to_if), e);
-    printf("\n");
     ret_val = eval(ref(cond_to_if), e, data);
-    
- ret:
+
+ret:
     unref(cond_to_if);
     unref(ptr);
-    unref(test);
-    unref(consequent);
     unref(args);
     unref(sym_begin);
-    
+
     return ret_val;
 }
 
@@ -1082,7 +1087,13 @@ object *primitive_cdr(env *e, object *args, parse_data *data) {
 }
 
 object *primitive_lambda(env *e, object *args, parse_data *data) {
-    
+    object *params = car(ref(args));
+    object *begin = new_symbol(lookup(data, "begin"));
+    object *body = cons(begin, cdr(args));
+    env *env = new_env();
+    env->parent = e;
+
+    return new_compound_proc(env, params, body);
 }
 
 void env_add_primitives(env *env, parse_data *parse_data) {
@@ -1113,8 +1124,6 @@ void env_add_primitives(env *env, parse_data *parse_data) {
     env_add_primitive(parse_data, env, "cdr", primitive_cdr);
 
     env_add_primitive(parse_data, env, "lambda", primitive_lambda);
-    
-    // todo
     env_add_primitive(parse_data, env, "cond", primitive_cond);
 }
 

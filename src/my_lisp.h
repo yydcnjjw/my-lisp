@@ -142,13 +142,14 @@ object *unref(object *o);
 /* } */
 
 #define for_each_list_entry(o, list)                                           \
-    for (object *idx = list;                                                   \
+    for (object *idx = ref(list);                                              \
          ((o) = (!idx ? NULL                                                   \
                       : idx->type == T_PAIR ? car(ref(idx)) : ref(idx))) !=    \
          NULL;                                                                 \
          unref(o), idx = idx->type == T_PAIR ? cdr(idx) : (unref(idx), NULL))
 
 #define for_each_list(list)                                                    \
-    for (object *idx = ref(list); idx && idx->type == T_PAIR; idx = cdr(idx))
+    for (object *idx = ref(list);                                              \
+         idx && (idx->type == T_PAIR ? 1 : (unref(idx), 0)); idx = cdr(idx))
 
 #endif /* MY_LISP_H */
