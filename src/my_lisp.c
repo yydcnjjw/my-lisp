@@ -289,6 +289,15 @@ object *new_compound_proc(env *env, object *params, object *body) {
                 return error;
             }
 
+            if (!param_list) {
+                param_list = cons(ref(arg), NIL);
+                ptr = ref(param_list);
+            } else {
+                setcdr(ref(ptr), cons(ref(arg), NIL));
+                ptr = cdr(ptr);
+            }
+            i++;
+            
             object *next = cdr(ref(idx));
             if (next && next->type != T_PAIR) {
                 varg = next->symbol;
@@ -298,16 +307,6 @@ object *new_compound_proc(env *env, object *params, object *body) {
                 break;
             }
             unref(next);
-
-            if (!param_list) {
-                param_list = cons(ref(arg), NIL);
-                ptr = ref(param_list);
-            } else {
-                setcdr(ref(ptr), cons(ref(arg), NIL));
-                ptr = cdr(ptr);
-            }
-
-            i++;
         }
         unref(ptr);
     }
@@ -560,29 +559,35 @@ object *proc_call(env *e, object *func, object *args, parse_data *data) {
         ret_val = func->primitive_proc->proc(e, ref(args), data);
     } else {
         env *func_env = func->compound_proc->env;
-        object *params = ref(func->compound_proc->parameters);
         int total = func->compound_proc->param_count;
-
         symbol *varg_sym = func->compound_proc->varg;
+        int given_num = 0;
+
+        object *params = ref(func->compound_proc->parameters);
+        object *param = NIL;
+
         object *varg_val = NIL;
         object *ptr = NIL;
+
         object *given = NIL;
-        int given_num = 0;
-        object *param = NIL;
         for_each_list_entry(given, args) {
-            ERROR(ASSERT(params || varg_sym,
+            unref(param);
+            param = params ? car(ref(params)) : NIL;
+
+            ERROR(ASSERT(param || varg_sym,
                          "Function passed too many arguments. "
                          "Expected %d.",
                          total)) {
                 unref(idx);
                 unref(given);
+                unref(param);
                 unref(params);
                 ret_val = error;
                 goto ret;
             }
 
             // varg handle
-            if (!params) {
+            if (!param) {
                 if (!varg_val) {
                     varg_val = cons(ref(given), NIL);
                     ptr = ref(varg_val);
@@ -592,9 +597,6 @@ object *proc_call(env *e, object *func, object *args, parse_data *data) {
                 }
                 continue;
             }
-
-            unref(param);
-            param = car(ref(params));
 
             object *eval_val = eval(ref(given), e, data);
             ERROR(ref(eval_val)) {
@@ -607,8 +609,9 @@ object *proc_call(env *e, object *func, object *args, parse_data *data) {
                 goto ret;
             }
             env_put(func_env, param->symbol, eval_val);
+
             given_num++;
-            params = car(cdr(params));
+            params = cdr(params);
         }
 
         unref(param);
@@ -617,8 +620,10 @@ object *proc_call(env *e, object *func, object *args, parse_data *data) {
 
         env_put(func_env, varg_sym, varg_val);
 
-        ERROR(ASSERT(total == given_num,
-                     "Exception: incorrect number of arguments")) {
+        ERROR(ASSERT(
+            total == given_num,
+            "Exception: incorrect number of arguments, given: %d, total: %d",
+            given_num, total)) {
             ret_val = error;
             goto ret;
         }
