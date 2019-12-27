@@ -59,11 +59,11 @@ int main(int argc, char *argv[]) {
     while (!IS_EOF) {
         int ret = yyparse(scanner, &data);
         if (!ret) {
-            object* value = eval(ref(data.ast), env, &data);
             printf("eval: ");
-            object_print(data.ast, env);
+            object_print(ref(data.ast), env);
             printf("\n");
             
+            object* value = eval(data.ast, env, &data);            
             object_print(value, env);
             printf("\n");
             data.ast = NULL;

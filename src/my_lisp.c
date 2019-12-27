@@ -6,6 +6,36 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <my-os/list.h>
+
+static inline object *object_list_entry(object *list) {
+    assert(list);
+    return list->type == T_PAIR ? car(list) : list;
+}
+
+static inline bool object_list_has_next(object *list) {
+    bool ret_val = list;
+    unref(list);
+    return ret_val;
+}
+
+static inline object *object_list_next(object *idx) {
+    assert(idx);
+    return idx->type == T_PAIR ? cdr(idx) : (unref(idx), NULL);
+}
+
+#define for_each_object_list_entry(o, list)                                    \
+    for (object *idx = ref(list);                                              \
+         !object_list_has_next(ref(idx))                                       \
+             ? false                                                           \
+             : (o = object_list_entry(ref(idx)), true);                        \
+         unref(o), idx = object_list_next(idx))
+
+#define for_each_object_list(list)                                             \
+    for (object *idx = ref(list);                                              \
+         idx && (idx->type == T_PAIR ? true : (unref(idx), false));            \
+         idx = cdr(idx))
+
 void *my_malloc(size_t size) {
     void *ret = malloc(size);
     if (!ret) {
@@ -40,6 +70,7 @@ char *to_string(object *o, ...);
 void free_object(object *o);
 const char *object_type_name(object_type type);
 object *assert_fun_arg_type(char *func, object *o, int i, object_type type);
+bool object_symbol_eq(object *sym, char *s);
 
 static inline object *is_error(object *o) {
     bool ret = o && o->type == T_ERR;
@@ -276,7 +307,7 @@ object *new_compound_proc(env *env, object *params, object *body) {
     } else {
         object *ptr = NIL;
         object *arg = NIL;
-        for_each_list_entry(arg, params) {
+        for_each_object_list_entry(arg, params) {
             ERROR(ASSERT(arg->type == T_SYMBOL,
                          "compound proc: must be pass symbol as params")) {
                 unref(param_list);
@@ -297,7 +328,7 @@ object *new_compound_proc(env *env, object *params, object *body) {
                 ptr = cdr(ptr);
             }
             i++;
-            
+
             object *next = cdr(ref(idx));
             if (next && next->type != T_PAIR) {
                 varg = next->symbol;
@@ -328,6 +359,22 @@ void free_compound_proc(object *o) {
     unref(proc->parameters);
     unref(proc->body);
     free_env(proc->env);
+    my_free(proc);
+}
+
+object *new_macro_proc(object *literals, object *syntax_rules) {
+    object *o = new_object(T_MACRO_PROC);
+    macro_proc *proc = my_malloc(sizeof(macro_proc));
+    proc->literals = literals;
+    proc->syntax_rules = syntax_rules;
+    o->macro_proc = proc;
+    return o;
+}
+
+void free_macro_proc(object *o) {
+    macro_proc *proc = o->macro_proc;
+    unref(proc->literals);
+    unref(proc->syntax_rules);
     my_free(proc);
 }
 
@@ -415,6 +462,9 @@ void free_object(object *o) {
     case T_COMPOUND_PROC:
         free_compound_proc(o);
         break;
+    case T_MACRO_PROC:
+        free_macro_proc(o);
+        break;
     case T_SYMBOL:
         break;
     default:
@@ -430,7 +480,7 @@ char *list_to_string(object *list) {
 
     strcat(list_str, "(");
     object *o;
-    for_each_list_entry(o, list) {
+    for_each_object_list_entry(o, list) {
         char *s = to_string(ref(o));
         int inc_len = 0;
         object *next = idx->type == T_PAIR ? cdr(ref(idx)) : NULL;
@@ -542,93 +592,438 @@ void object_print(object *o, env *e) {
     my_free(s);
 }
 
-int list_len(object *list) {
-    assert(list && list->type == T_PAIR);
+size_t object_list_len(object *list) {
+    if (!list)
+        return 0;
 
-    int i = 0;
+    size_t i = 0;
     object *o;
-    for_each_list_entry(o, list) { i++; }
+    for_each_object_list_entry(o, list) { i++; }
     unref(list);
     return i;
 }
 
-object *proc_call(env *e, object *func, object *args, parse_data *data) {
+object *compound_proc_call(env *e, object *func, object *args,
+                           parse_data *data) {
     object *ret_val = NIL;
-    assert(func && func->type & (T_PRIMITIVE_PROC | T_COMPOUND_PROC));
-    if (func->type == T_PRIMITIVE_PROC) {
-        ret_val = func->primitive_proc->proc(e, ref(args), data);
-    } else {
-        env *func_env = func->compound_proc->env;
-        int total = func->compound_proc->param_count;
-        symbol *varg_sym = func->compound_proc->varg;
-        int given_num = 0;
 
-        object *params = ref(func->compound_proc->parameters);
-        object *param = NIL;
+    env *func_env = func->compound_proc->env;
+    int total = func->compound_proc->param_count;
+    symbol *varg_sym = func->compound_proc->varg;
+    int given_num = 0;
 
-        object *varg_val = NIL;
-        object *ptr = NIL;
+    object *params = ref(func->compound_proc->parameters);
+    object *param = NIL;
 
-        object *given = NIL;
-        for_each_list_entry(given, args) {
-            unref(param);
-            param = params ? car(ref(params)) : NIL;
+    object *varg_val = NIL;
+    object *ptr = NIL;
 
-            ERROR(ASSERT(param || varg_sym,
-                         "Function passed too many arguments. "
-                         "Expected %d.",
-                         total)) {
-                unref(idx);
-                unref(given);
-                unref(param);
-                unref(params);
-                ret_val = error;
-                goto ret;
-            }
-
-            // varg handle
-            if (!param) {
-                if (!varg_val) {
-                    varg_val = cons(ref(given), NIL);
-                    ptr = ref(varg_val);
-                } else {
-                    setcdr(ref(ptr), cons(ref(given), NIL));
-                    ptr = cdr(ptr);
-                }
-                continue;
-            }
-
-            object *eval_val = eval(ref(given), e, data);
-            ERROR(ref(eval_val)) {
-                unref(idx);
-                unref(given);
-                unref(param);
-                unref(params);
-                unref(eval_val);
-                ret_val = error;
-                goto ret;
-            }
-            env_put(func_env, param->symbol, eval_val);
-
-            given_num++;
-            params = cdr(params);
-        }
-
+    object *given = NIL;
+    for_each_object_list_entry(given, args) {
         unref(param);
-        unref(params);
-        unref(ptr);
+        param = params ? car(ref(params)) : NIL;
 
-        env_put(func_env, varg_sym, varg_val);
-
-        ERROR(ASSERT(
-            total == given_num,
-            "Exception: incorrect number of arguments, given: %d, total: %d",
-            given_num, total)) {
+        ERROR(ASSERT(param || varg_sym,
+                     "Function passed too many arguments. "
+                     "Expected %d.",
+                     total)) {
+            unref(idx);
+            unref(given);
+            unref(param);
+            unref(params);
             ret_val = error;
             goto ret;
         }
 
-        ret_val = eval(ref(func->compound_proc->body), func_env, data);
+        // varg handle
+        if (!param) {
+            if (!varg_val) {
+                varg_val = cons(ref(given), NIL);
+                ptr = ref(varg_val);
+            } else {
+                setcdr(ref(ptr), cons(ref(given), NIL));
+                ptr = cdr(ptr);
+            }
+            continue;
+        }
+
+        object *eval_val = eval(ref(given), e, data);
+        ERROR(ref(eval_val)) {
+            unref(idx);
+            unref(given);
+            unref(param);
+            unref(params);
+            unref(eval_val);
+            ret_val = error;
+            goto ret;
+        }
+        env_put(func_env, param->symbol, eval_val);
+
+        given_num++;
+        params = cdr(params);
+    }
+
+    unref(param);
+    unref(params);
+    unref(ptr);
+
+    if (varg_sym) {
+        env_put(func_env, varg_sym, varg_val);
+    }
+
+    ERROR(
+        ASSERT(total == given_num,
+               "Exception: incorrect number of arguments, given: %d, total: %d",
+               given_num, total)) {
+        ret_val = error;
+        goto ret;
+    }
+
+    ret_val = eval(ref(func->compound_proc->body), func_env, data);
+
+ret:
+    unref(func);
+    unref(args);
+    return ret_val;
+}
+
+typedef struct pattern_value_t {
+    symbol *sym;
+    object *value;
+    struct list_head head;
+} pattern_value;
+
+void free_pattern_value(pattern_value *pattern_val) {
+    while (!list_empty(&pattern_val->head)) {
+        pattern_value *entry = list_next_entry(pattern_val, head);
+        list_del(&entry->head);
+        unref(entry->value);
+        my_free(entry);
+    }
+    my_free(pattern_val);
+}
+
+pattern_value *pattern_values_get(pattern_value *list, symbol *sym) {
+    pattern_value *entry;
+    list_for_each_entry(entry, &list->head, head) {
+        if (entry->sym == sym) {
+            return entry;
+        }
+    }
+    return NULL;
+}
+
+pattern_value *handle_list_pattern(object *literals, object *list, object *args,
+                                   parse_data *data) {
+    pattern_value *ret_val = NULL;
+
+    symbol *ellipsis = lookup(data, "...");
+    symbol *underscore = lookup(data, "_");
+
+    pattern_value *pattern_values = my_malloc(sizeof(pattern_value));
+    INIT_LIST_HEAD(&pattern_values->head);
+
+    object *args_idx = ref(args);
+    object *args_prev_idx = ref(args_idx); // for backtracking
+    object *param = NIL;
+
+    object *pattern = NIL;
+    for_each_object_list_entry(pattern, list) {
+        if (object_list_has_next(ref(args_idx))) {
+            param = object_list_entry(ref(args_idx));
+        } else {
+            unref(idx);
+            unref(pattern);
+            unref(args_idx);
+            goto not_match;
+        }
+
+        if (pattern) {
+            if (pattern->type == T_PAIR) {
+                if (param->type != T_PAIR) {
+                    unref(idx);
+                    unref(pattern);
+                    unref(param);
+                    unref(args_idx);
+                    goto not_match;
+                } else {
+                    pattern_value *list = handle_list_pattern(
+                        ref(literals), ref(pattern), ref(param), data);
+
+                    if (list) {
+                        pattern_value *entry;
+                        list_for_each_entry(entry, &list->head, head) {
+                            pattern_value *value =
+                                my_malloc(sizeof(pattern_value));
+                            value->sym = entry->sym;
+                            value->value = ref(entry->value);
+
+                            list_add(&value->head, &pattern_values->head);
+                        }
+                        free_pattern_value(list);
+                    } else {
+                        unref(idx);
+                        unref(pattern);
+                        unref(param);
+                        unref(args_idx);
+
+                        goto not_match;
+                    }
+                }
+            } else if (pattern->type == T_SYMBOL) {
+                symbol *sym = pattern->symbol;
+
+                if (sym == ellipsis) {
+                    pattern_value *entry = list_first_entry(
+                        &pattern_values->head, pattern_value, head);
+
+                    size_t rest_patterns = object_list_len(cdr(ref(idx)));
+                    size_t rest_args = object_list_len(ref(args_idx));
+                    int value_num = rest_args - rest_patterns;
+
+                    if (value_num == -1) {
+                        // entry value is empty
+                        unref(entry->value);
+                        entry->value = NIL;
+                        unref(args_idx);
+                        unref(param);
+                        args_idx = ref(args_prev_idx);
+                        continue;
+                    } else if (value_num < -1) {
+                        // not enough arguments
+                        unref(idx);
+                        unref(pattern);
+                        unref(param);
+                        unref(args_idx);
+
+                        goto syntax_error;
+                    }
+
+                    entry->value = cons(entry->value, NIL);
+                    object *ptr = ref(entry->value);
+
+                    setcdr(ref(ptr), cons(ref(param), NIL));
+                    ptr = cdr(ptr);
+                    value_num--;
+                    unref(param);
+                    args_idx = object_list_next(args_idx);
+
+                    while (value_num--) {
+                        param = object_list_entry(ref(args_idx));
+
+                        setcdr(ref(ptr), cons(ref(param), NIL));
+                        ptr = cdr(ptr);
+
+                        unref(param);
+                        unref(args_prev_idx);
+                        args_prev_idx = ref(args_idx);
+                        args_idx = object_list_next(args_idx);
+                    }
+                    unref(ptr);
+                    continue;
+                } else {
+                    if (!pattern_values_get(pattern_values, sym) &&
+                        sym != underscore) {
+                        pattern_value *entry = my_malloc(sizeof(pattern_value));
+                        entry->sym = pattern->symbol;
+                        entry->value = ref(param);
+                        list_add(&entry->head, &pattern_values->head);
+                    } else {
+                        unref(idx);
+                        unref(pattern);
+                        unref(param);
+                        unref(args_idx);
+
+                        // 重复的 pattern
+                        goto syntax_error;
+                    }
+                }
+            }
+        }
+
+        unref(param);
+        unref(args_prev_idx);
+        args_prev_idx = ref(args_idx);
+        args_idx = object_list_next(args_idx);
+    }
+
+    if (object_list_has_next(ref(args_idx))) {
+        goto not_match;
+    }
+
+    ret_val = pattern_values;
+    unref(args_prev_idx);
+    unref(args);
+    unref(list);
+    unref(literals);
+    return ret_val;
+
+syntax_error:
+    /* ret_val = new_error("syntax error"); */
+
+not_match:
+    free_pattern_value(pattern_values);
+    unref(args_prev_idx);
+    unref(args);
+    unref(list);
+    unref(literals);
+    return ret_val;
+}
+
+pattern_value *match_srpattern(object *literals, object *srpattern,
+                               object *args, parse_data *data) {
+
+    // ignore first pattern
+    return handle_list_pattern(literals, cdr(srpattern), args, data);
+}
+
+object *handle_template(pattern_value *list, object *template,
+                        parse_data *data) {
+    symbol *ellipsis = lookup(data, "...");
+
+    object *ret_val = NIL;
+    object *ptr = NIL;
+    object *prev_ptr = NIL;
+
+    object *entry;
+    for_each_object_list_entry(entry, template) {
+
+        if (entry) {
+            object *value = NIL;
+            if (entry->type == T_PAIR) {
+                value = handle_template(list, ref(entry), data);
+            } else if (entry->type == T_SYMBOL) {
+                if (ellipsis == entry->symbol) {
+                    object *sllipsis_list = car(ref(ptr));
+
+                    if (!sllipsis_list) {
+                        /* unref(sllipsis_list); */
+                        setcdr(ref(prev_ptr), NIL);
+                        unref(ptr);
+                        ptr = ref(prev_ptr);
+                        continue;
+                    }
+
+                    setcar(ref(ptr), car(ref(sllipsis_list)));
+                    object *o;
+                    sllipsis_list = cdr(sllipsis_list);
+                    for_each_object_list_entry(o, sllipsis_list) {
+                        setcdr(ref(ptr), cons(ref(o), NIL));
+                        ptr = cdr(ptr);
+                    }
+                    unref(sllipsis_list);
+                    continue;
+                } else {
+                    pattern_value *pattern =
+                        pattern_values_get(list, entry->symbol);
+                    if (pattern) {
+                        value = ref(pattern->value);
+                    } else {
+                        value = ref(entry);
+                    }
+                }
+            }
+
+            if (ret_val == NIL) {
+                ret_val = cons(value, NIL);
+                ptr = ref(ret_val);
+                prev_ptr = ref(ptr);
+            } else {
+                setcdr(ref(ptr), cons(value, NIL));
+                unref(prev_ptr);
+                prev_ptr = ref(ptr);
+                ptr = cdr(ptr);
+            }
+        }
+    }
+
+    unref(ptr);
+    unref(prev_ptr);
+    unref(template);
+
+    return ret_val;
+}
+
+object *macro_proc_call(env *e, object *func, object *args, parse_data *data) {
+    macro_proc *proc = func->macro_proc;
+    printf("literals: ");
+    object_print(ref(proc->literals), e);
+    printf("\n");
+    printf("syntax rules: ");
+    object_print(ref(proc->syntax_rules), e);
+    printf("\n");
+
+    printf("args: ");
+    object_print(ref(args), e);
+    printf("\n");
+
+    object *ret_val = NIL;
+    object *syntax_rule;
+    for_each_object_list_entry(syntax_rule, proc->syntax_rules) {
+        object *srpattern = car(ref(syntax_rule));
+        object *template = car(cdr(ref(syntax_rule)));
+
+        printf("srpattern: ");
+        object_print(cdr(ref(srpattern)), e);
+        printf("\n");
+
+        printf("template: ");
+        object_print(ref(template), e);
+        printf("\n");
+
+        pattern_value *pattern =
+            match_srpattern(ref(proc->literals), srpattern, ref(args), data);
+
+        if (pattern) {
+            pattern_value *entry;
+            list_for_each_entry(entry, &pattern->head, head) {
+                char *s = to_string(ref(entry->value));
+                printf("%s = %s\n", entry->sym->name, s);
+                my_free(s);
+            }
+
+            ret_val = handle_template(pattern, template, data);
+            free_pattern_value(pattern);
+            unref(syntax_rule);
+            unref(idx);
+            break;
+        }
+
+        unref(template);
+    }
+
+    if (!ret_val) {
+        ret_val = new_error("Exception: invalid syntax");
+    } else {
+        printf("template value: ");
+        object_print(ref(ret_val), e);
+        printf("\n");
+
+        ret_val = eval(ret_val, e, data);
+    }
+
+    unref(args);
+    unref(func);
+
+    return ret_val;
+}
+
+object *proc_call(env *e, object *func, object *args, parse_data *data) {
+    object *ret_val = NIL;
+    assert(func && func->type & (T_PROCEDURE | T_MACRO_PROC));
+    switch (func->type) {
+    case T_PRIMITIVE_PROC:
+        ret_val = func->primitive_proc->proc(e, ref(args), data);
+        break;
+    case T_COMPOUND_PROC:
+        ret_val = compound_proc_call(e, ref(func), ref(args), data);
+        break;
+    case T_MACRO_PROC:
+        ret_val = macro_proc_call(e, ref(func), ref(args), data);
+        break;
+    default:
+        ret_val = new_error("Exception: func type is not supported");
+        break;
     }
 
 ret:
@@ -640,7 +1035,7 @@ ret:
 object *eval_list(object *expr, env *env, parse_data *data) {
     object *operator= eval(car(ref(expr)), env, data);
 
-    if (operator&& !(operator->type &(T_PRIMITIVE_PROC | T_COMPOUND_PROC))) {
+    if (operator&& !(operator->type &(T_PROCEDURE | T_MACRO_PROC))) {
         char *s = to_string(operator);
         object *err =
             new_error("Exception: attempt to apply non-procedure %s", s);
@@ -708,9 +1103,11 @@ const char *type_name(object *o) {
 
 object *primitive_op(env *e, object *args, char op, parse_data *data) {
     object *ret_val = NIL;
+    char op_s[] = {op, '\0'};
 
     object *first = eval(car(ref(args)), e, data);
-    ERROR(ref(first)) {
+
+    ERROR(assert_fun_arg_type(op_s, ref(first), 0, T_NUMBER)) {
         unref(first);
         ret_val = error;
         goto ret;
@@ -722,7 +1119,7 @@ object *primitive_op(env *e, object *args, char op, parse_data *data) {
     int i = 1;
     object *operand;
     object *rest_args = cdr(ref(args));
-    for_each_list_entry(operand, rest_args) {
+    for_each_object_list_entry(operand, rest_args) {
         object *o = eval(ref(operand), e, data);
         ERROR(ref(o)) {
             unref(idx);
@@ -732,7 +1129,6 @@ object *primitive_op(env *e, object *args, char op, parse_data *data) {
             goto loop_exit;
         }
 
-        char op_s[] = {op, '\0'};
         ERROR(assert_fun_arg_type(op_s, ref(o), i, T_NUMBER)) {
             unref(idx);
             unref(operand);
@@ -856,7 +1252,7 @@ object *is_type(object *o, object_type type) {
 }
 
 object *assert_fun_args_count(char *fun, object *args, int count) {
-    if (list_len(args) != count) {
+    if (object_list_len(args) != count) {
         return new_error("Exception: incorrect argument count in call %s", fun);
     } else {
         return NIL;
@@ -864,7 +1260,7 @@ object *assert_fun_args_count(char *fun, object *args, int count) {
 }
 
 object *assert_fun_args_count_range(char *fun, object *args, int min, int max) {
-    int size = list_len(args);
+    int size = object_list_len(args);
     if (min <= size && size <= max) {
         return new_error("Exception: incorrect argument count in call %s", fun);
     } else {
@@ -909,6 +1305,23 @@ object *primitive_is_symbol(env *e, object *args, parse_data *data) {
     return primitive_is_type(e, args, "symbol?", T_SYMBOL, data);
 }
 
+object *primitive_is_error(env *e, object *args, parse_data *data) {
+    ERROR(assert_fun_args_count("error?", ref(args), 1)) {
+        unref(args);
+        return error;
+    }
+
+    object *ret_val = NIL;
+    object *param = eval(car(args), e, data);
+    if (param && param->type == T_ERR) {
+        ret_val = ref(&True);
+    } else {
+        ret_val = ref(&False);
+    }
+    unref(param);
+    return ret_val;
+}
+
 object *primitive_quote(env *e, object *args, parse_data *data) {
     if (!args) {
         /* unref(args); */
@@ -924,7 +1337,7 @@ object *primitive_quote(env *e, object *args, parse_data *data) {
 object *primitive_if(env *e, object *args, parse_data *data) {
     object *ret_val = NIL;
 
-    size_t arg_len = list_len(ref(args));
+    size_t arg_len = object_list_len(ref(args));
 
     ERROR(ASSERT(2 <= arg_len && arg_len <= 3, "Exception: invalid syntax")) {
         ret_val = error;
@@ -995,7 +1408,7 @@ object *primitive_cond(env *e, object *args, parse_data *data) {
 
     object *cond_to_if = NIL;
 
-    for_each_list_entry(clause, args) {
+    for_each_object_list_entry(clause, args) {
         test = car(ref(clause));
         if (object_symbol_eq(ref(test), "else")) {
             object *rest = cdr(ref(idx));
@@ -1029,7 +1442,7 @@ object *primitive_cond(env *e, object *args, parse_data *data) {
             // (<test> => <expression>)
             // expression = procedure object
             // TODO: impl
-            ERROR(ASSERT(list_len(ref(clause)) == 3,
+            ERROR(ASSERT(object_list_len(ref(clause)) == 3,
                          "Exception: misplaced aux keyword =>")) {
                 unref(idx);
                 unref(clause);
@@ -1067,7 +1480,7 @@ ret:
 object *primitive_begin(env *e, object *args, parse_data *data) {
     object *ret_val = NIL;
     object *form = NIL;
-    for_each_list_entry(form, args) {
+    for_each_object_list_entry(form, args) {
         unref(ret_val);
         ret_val = eval(ref(form), e, data);
     }
@@ -1091,6 +1504,14 @@ object *primitive_cdr(env *e, object *args, parse_data *data) {
     return cdr(eval(car(args), e, data));
 }
 
+object *primitive_cons(env *e, object *args, parse_data *data) {
+    ERROR(assert_fun_args_count("cons", ref(args), 2)) {
+        unref(args);
+        return error;
+    }
+    return cons(eval(car(ref(args)), e, data), eval(car(cdr(args)), e, data));
+}
+
 object *primitive_lambda(env *e, object *args, parse_data *data) {
     object *params = car(ref(args));
     object *begin = new_symbol(lookup(data, "begin"));
@@ -1099,6 +1520,64 @@ object *primitive_lambda(env *e, object *args, parse_data *data) {
     env->parent = e;
 
     return new_compound_proc(env, params, body);
+}
+
+object *primitive_define_syntax(env *e, object *args, parse_data *data) {
+    return primitive_define(e, args, data);
+}
+
+/* struct literal_ident { */
+/*     symbol *sym; */
+/*     struct list_head head; */
+/* }; */
+
+/* struct syntax_rule { */
+/*     object *srpattern; */
+/*     object *template; */
+/*     struct list_head head; */
+/* }; */
+
+/* struct syntax_rules { */
+/*     struct syntax_rule rules; */
+/*     struct literal_ident literals; */
+/* }; */
+
+object *primitive_syntax_rules(env *e, object *args, parse_data *data) {
+
+    object *ret_val = NIL;
+
+    // TODO: assert args count
+
+    symbol *ellipsis = lookup(data, "...");
+    symbol *underscore = lookup(data, "...");
+
+    object *literals = car(ref(args));
+    object *literal;
+    for_each_object_list_entry(literal, literals) {
+        // error check
+        ERROR(ASSERT(literal && literal->type == T_SYMBOL &&
+                         literal->symbol != ellipsis &&
+                         literal->symbol != underscore,
+                     "")) {
+            unref(idx);
+            unref(literal);
+            unref(literals);
+            ret_val = error;
+            goto ret;
+        }
+    }
+
+    object *syntax_rules = cdr(args);
+    ret_val = new_macro_proc(literals, syntax_rules);
+
+    /*     object *syntax_rule; */
+    /*     for_each_object_list_entry(syntax_rule, syntax_rules) { */
+    /*         object *srpattern = car(syntax_rule); */
+    /*         object *template = car(cdr(syntax_rule)); */
+    /*     } */
+    /* error: */
+ret:
+    return ret_val;
 }
 
 void env_add_primitives(env *env, parse_data *parse_data) {
@@ -1114,6 +1593,8 @@ void env_add_primitives(env *env, parse_data *parse_data) {
     env_add_primitive(parse_data, env, "char?", primitive_is_boolean);
     env_add_primitive(parse_data, env, "vector?", primitive_is_boolean);
 
+    env_add_primitive(parse_data, env, "error?", primitive_is_error);
+
     env_add_primitive(parse_data, env, "+", primitive_add);
     env_add_primitive(parse_data, env, "-", primitive_sub);
     env_add_primitive(parse_data, env, "*", primitive_mul);
@@ -1123,13 +1604,19 @@ void env_add_primitives(env *env, parse_data *parse_data) {
     env_add_primitive(parse_data, env, "quote", primitive_quote);
 
     env_add_primitive(parse_data, env, "begin", primitive_begin);
-    env_add_primitive(parse_data, env, "if", primitive_if);
 
     env_add_primitive(parse_data, env, "car", primitive_car);
     env_add_primitive(parse_data, env, "cdr", primitive_cdr);
+    env_add_primitive(parse_data, env, "cons", primitive_cons);
 
     env_add_primitive(parse_data, env, "lambda", primitive_lambda);
+
+    env_add_primitive(parse_data, env, "if", primitive_if);
     env_add_primitive(parse_data, env, "cond", primitive_cond);
+
+    env_add_primitive(parse_data, env, "define-syntax",
+                      primitive_define_syntax);
+    env_add_primitive(parse_data, env, "syntax-rules", primitive_syntax_rules);
 }
 
 void free_symbol(symbol *sym) {

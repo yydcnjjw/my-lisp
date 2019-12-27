@@ -2,9 +2,7 @@
 #define MY_LISP_H
 
 #include <assert.h>
-#include <stdbool.h>
-#include <stddef.h>
-#include <stdint.h>
+#include <my-os/types.h>
 
 typedef enum {
     T_PRIMITIVE_PROC = 0x1,
@@ -20,6 +18,7 @@ typedef enum {
     T_CHARACTER = 0x100,
     T_ERR = 0x200,
     T_NULL = 0x400,
+    T_MACRO_PROC = 0x800,
 } object_type;
 
 typedef struct object_t object;
@@ -76,6 +75,13 @@ struct primitive_proc_t {
 
 typedef struct primitive_proc_t primitive_proc;
 
+struct macro_proc_t {
+    object *literals;
+    object *syntax_rules;
+};
+
+typedef struct macro_proc_t macro_proc;
+
 struct object_t {
     object_type type;
     int ref_count;
@@ -86,6 +92,7 @@ struct object_t {
         char char_val;
         primitive_proc *primitive_proc;
         compound_proc *compound_proc;
+        macro_proc *macro_proc;
         symbol *symbol;
         pair *pair;
         string *str;
@@ -131,25 +138,5 @@ void eof_handle(void);
 
 object *ref(object *o);
 object *unref(object *o);
-
-/* static inline object *has_next(object *idx) { */
-/*     return !idx ? NULL : idx->type == T_PAIR ? car(idx) : idx; */
-/* } */
-
-/* static inline object *next(object *idx) { */
-/*     assert(idx); */
-/*     return idx->type == T_PAIR ? cdr(idx) : (unref(idx), NULL); */
-/* } */
-
-#define for_each_list_entry(o, list)                                           \
-    for (object *idx = ref(list);                                              \
-         ((o) = (!idx ? NULL                                                   \
-                      : idx->type == T_PAIR ? car(ref(idx)) : ref(idx))) !=    \
-         NULL;                                                                 \
-         unref(o), idx = idx->type == T_PAIR ? cdr(idx) : (unref(idx), NULL))
-
-#define for_each_list(list)                                                    \
-    for (object *idx = ref(list);                                              \
-         idx && (idx->type == T_PAIR ? 1 : (unref(idx), 0)); idx = cdr(idx))
 
 #endif /* MY_LISP_H */
