@@ -713,15 +713,20 @@ pattern_value *pattern_values_get(pattern_value *list, symbol *sym) {
     return NULL;
 }
 
-pattern_value *handle_list_pattern(object *literals, object *list, object *args,
-                                   parse_data *data) {
-    pattern_value *ret_val = NULL;
+typedef enum pattern_match_code {
+    MATCH,
+    NOT_MATCH,
+    SYNTAX_ERR
+} pattern_match_code;
+
+pattern_match_code handle_list_pattern(pattern_value *pattern_values,
+                                       object *literals, object *list,
+                                       object *args, parse_data *data) {
+
+    pattern_match_code match_code = MATCH;
 
     symbol *ellipsis = lookup(data, "...");
     symbol *underscore = lookup(data, "_");
-
-    pattern_value *pattern_values = my_malloc(sizeof(pattern_value));
-    INIT_LIST_HEAD(&pattern_values->head);
 
     object *args_idx = ref(args);
     object *args_prev_idx = ref(args_idx); // for backtracking
@@ -732,10 +737,19 @@ pattern_value *handle_list_pattern(object *literals, object *list, object *args,
         if (object_list_has_next(ref(args_idx))) {
             param = object_list_entry(ref(args_idx));
         } else {
-            unref(idx);
-            unref(pattern);
-            unref(args_idx);
-            goto not_match;
+            if (object_list_len(ref(pattern)) == 2) {
+                object *sym = object_list_entry(object_list_next(ref(pattern)));
+                if (object_symbol_eq(ref(sym), "...")) {
+                    param = NIL;
+                }
+            } else {
+                unref(idx);
+                unref(pattern);
+                unref(args_idx);
+
+                match_code = NOT_MATCH;
+                goto ret;
+            }
         }
 
         if (pattern) {
@@ -745,29 +759,22 @@ pattern_value *handle_list_pattern(object *literals, object *list, object *args,
                     unref(pattern);
                     unref(param);
                     unref(args_idx);
-                    goto not_match;
+
+                    match_code = NOT_MATCH;
+                    goto ret;
                 } else {
-                    pattern_value *list = handle_list_pattern(
-                        ref(literals), ref(pattern), ref(param), data);
+                    pattern_match_code ret =
+                        handle_list_pattern(pattern_values, ref(literals),
+                                            ref(pattern), ref(param), data);
 
-                    if (list) {
-                        pattern_value *entry;
-                        list_for_each_entry(entry, &list->head, head) {
-                            pattern_value *value =
-                                my_malloc(sizeof(pattern_value));
-                            value->sym = entry->sym;
-                            value->value = ref(entry->value);
-
-                            list_add(&value->head, &pattern_values->head);
-                        }
-                        free_pattern_value(list);
-                    } else {
+                    if (ret != MATCH) {
                         unref(idx);
                         unref(pattern);
                         unref(param);
                         unref(args_idx);
 
-                        goto not_match;
+                        match_code = ret;
+                        goto ret;
                     }
                 }
             } else if (pattern->type == T_SYMBOL) {
@@ -796,7 +803,8 @@ pattern_value *handle_list_pattern(object *literals, object *list, object *args,
                         unref(param);
                         unref(args_idx);
 
-                        goto syntax_error;
+                        match_code = SYNTAX_ERR;
+                        goto ret;
                     }
 
                     entry->value = cons(entry->value, NIL);
@@ -824,18 +832,33 @@ pattern_value *handle_list_pattern(object *literals, object *list, object *args,
                 } else {
                     if (!pattern_values_get(pattern_values, sym) &&
                         sym != underscore) {
-                        pattern_value *entry = my_malloc(sizeof(pattern_value));
-                        entry->sym = pattern->symbol;
-                        entry->value = ref(param);
-                        list_add(&entry->head, &pattern_values->head);
+                        bool match_literal = false;
+                        object *literal;
+                        for_each_object_list_entry(literal, literals) {
+                            if (literal->symbol == sym) {
+                                match_literal = true;
+                                unref(literal);
+                                unref(idx);
+                                break;
+                            }
+                        }
+
+                        if (!match_literal) {
+                            pattern_value *entry =
+                                my_malloc(sizeof(pattern_value));
+                            entry->sym = pattern->symbol;
+                            entry->value = ref(param);
+                            list_add(&entry->head, &pattern_values->head);
+                        }
                     } else {
+                        // Plural pattern
                         unref(idx);
                         unref(pattern);
                         unref(param);
                         unref(args_idx);
 
-                        // 重复的 pattern
-                        goto syntax_error;
+                        match_code = SYNTAX_ERR;
+                        goto ret;
                     }
                 }
             }
@@ -848,33 +871,37 @@ pattern_value *handle_list_pattern(object *literals, object *list, object *args,
     }
 
     if (object_list_has_next(ref(args_idx))) {
-        goto not_match;
+        unref(args_idx);
+        match_code = NOT_MATCH;
     }
 
-    ret_val = pattern_values;
+ret:
     unref(args_prev_idx);
     unref(args);
     unref(list);
     unref(literals);
-    return ret_val;
 
-syntax_error:
-    /* ret_val = new_error("syntax error"); */
-
-not_match:
-    free_pattern_value(pattern_values);
-    unref(args_prev_idx);
-    unref(args);
-    unref(list);
-    unref(literals);
-    return ret_val;
+    return match_code;
 }
 
-pattern_value *match_srpattern(object *literals, object *srpattern,
-                               object *args, parse_data *data) {
+pattern_match_code match_srpattern(pattern_value **pattern_values,
+                                   object *literals, object *srpattern,
+                                   object *args, parse_data *data) {
+
+    if (!*pattern_values) {
+        *pattern_values = my_malloc(sizeof(pattern_value));
+        INIT_LIST_HEAD(&(*pattern_values)->head);
+    }
+
+    pattern_match_code code = handle_list_pattern(*pattern_values, literals,
+                                                  cdr(srpattern), args, data);
+    if (code != MATCH) {
+        free_pattern_value(*pattern_values);
+        *pattern_values = NULL;
+    }
 
     // ignore first pattern
-    return handle_list_pattern(literals, cdr(srpattern), args, data);
+    return code;
 }
 
 object *handle_template(pattern_value *list, object *template,
@@ -971,19 +998,20 @@ object *macro_proc_call(env *e, object *func, object *args, parse_data *data) {
         object_print(ref(template), e);
         printf("\n");
 
-        pattern_value *pattern =
-            match_srpattern(ref(proc->literals), srpattern, ref(args), data);
+        pattern_value *pattern_values = NULL;
+        pattern_match_code ret = match_srpattern(
+            &pattern_values, ref(proc->literals), srpattern, ref(args), data);
 
-        if (pattern) {
+        if (ret == MATCH) {
             pattern_value *entry;
-            list_for_each_entry(entry, &pattern->head, head) {
+            list_for_each_entry(entry, &pattern_values->head, head) {
                 char *s = to_string(ref(entry->value));
                 printf("%s = %s\n", entry->sym->name, s);
                 my_free(s);
             }
 
-            ret_val = handle_template(pattern, template, data);
-            free_pattern_value(pattern);
+            ret_val = handle_template(pattern_values, template, data);
+            free_pattern_value(pattern_values);
             unref(syntax_rule);
             unref(idx);
             break;
@@ -1526,22 +1554,6 @@ object *primitive_define_syntax(env *e, object *args, parse_data *data) {
     return primitive_define(e, args, data);
 }
 
-/* struct literal_ident { */
-/*     symbol *sym; */
-/*     struct list_head head; */
-/* }; */
-
-/* struct syntax_rule { */
-/*     object *srpattern; */
-/*     object *template; */
-/*     struct list_head head; */
-/* }; */
-
-/* struct syntax_rules { */
-/*     struct syntax_rule rules; */
-/*     struct literal_ident literals; */
-/* }; */
-
 object *primitive_syntax_rules(env *e, object *args, parse_data *data) {
 
     object *ret_val = NIL;
@@ -1570,6 +1582,7 @@ object *primitive_syntax_rules(env *e, object *args, parse_data *data) {
     object *syntax_rules = cdr(args);
     ret_val = new_macro_proc(literals, syntax_rules);
 
+    // TODO: 检查语法错误
     /*     object *syntax_rule; */
     /*     for_each_object_list_entry(syntax_rule, syntax_rules) { */
     /*         object *srpattern = car(syntax_rule); */
@@ -1577,6 +1590,76 @@ object *primitive_syntax_rules(env *e, object *args, parse_data *data) {
     /*     } */
     /* error: */
 ret:
+    return ret_val;
+}
+
+object *primitive_let(env *e, object *args, parse_data *data) {
+
+    object *ret_val = NIL;
+
+    object *bindings = car(ref(args));
+    ERROR(ASSERT(!bindings || bindings->type == T_PAIR, "invalid syntax let")) {
+        unref(bindings);
+        ret_val = error;
+        goto ret;
+    }
+
+    env *let_env = new_env();
+
+    object *binding;
+    for_each_object_list_entry(binding, bindings) {
+        ERROR(
+            ASSERT(object_list_len(ref(binding)) == 2, "invalid syntax let")) {
+            unref(binding);
+            unref(idx);
+            ret_val = error;
+            goto ret;
+        }
+
+        object *var = car(ref(binding));
+
+        ERROR(ASSERT(var && var->type == T_SYMBOL, "invalid syntax let")) {
+            unref(var);
+            unref(binding);
+            unref(idx);
+            ret_val = error;
+            goto ret;
+        }
+
+        object *value = env_get(let_env, var->symbol);
+        ERROR(ASSERT(value && value->type == T_ERR, "invalid syntax let")) {
+            unref(value);
+            unref(var);
+            unref(binding);
+            unref(idx);
+            ret_val = error;
+            goto ret;
+        }
+        object *init = car(cdr(ref(binding)));
+        object *val = eval(init, e, data);
+        ERROR(ref(val)) {
+            unref(value);
+            unref(var);
+            unref(binding);
+            unref(idx);
+            ret_val = error;
+            goto ret;
+        }
+        env_put(let_env, var->symbol, val);
+
+        unref(value);
+        unref(var);
+    }
+
+    let_env->parent = e;
+
+    object *body = cdr(ref(args));
+    ret_val = primitive_begin(let_env, body, data);
+
+ret:
+    unref(bindings);
+    unref(args);
+    free_env(let_env);
     return ret_val;
 }
 
@@ -1613,6 +1696,8 @@ void env_add_primitives(env *env, parse_data *parse_data) {
 
     env_add_primitive(parse_data, env, "if", primitive_if);
     env_add_primitive(parse_data, env, "cond", primitive_cond);
+
+    env_add_primitive(parse_data, env, "let", primitive_let);
 
     env_add_primitive(parse_data, env, "define-syntax",
                       primitive_define_syntax);
