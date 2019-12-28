@@ -737,19 +737,47 @@ pattern_match_code handle_list_pattern(pattern_value *pattern_values,
         if (object_list_has_next(ref(args_idx))) {
             param = object_list_entry(ref(args_idx));
         } else {
-            if (object_list_len(ref(pattern)) == 2) {
-                object *sym = object_list_entry(object_list_next(ref(pattern)));
-                if (object_symbol_eq(ref(sym), "...")) {
-                    param = NIL;
-                }
-            } else {
-                unref(idx);
-                unref(pattern);
-                unref(args_idx);
+            symbol *sym = pattern->symbol;
+            if (sym == ellipsis) {
+                match_code = MATCH;
+            } else if (object_list_len(ref(idx)) == 2 &&
+                       object_symbol_eq(
+                           object_list_entry(object_list_next(ref(idx))),
+                           "...") &&
+                       !pattern_values_get(pattern_values, sym) &&
+                       sym != underscore) {
 
+                bool match_literal = false;
+                object *literal;
+                for_each_object_list_entry(literal, literals) {
+                    if (literal->symbol == sym) {
+                        match_literal = true;
+                        unref(literal);
+                        unref(idx);
+                        break;
+                    }
+                }
+
+                if (!match_literal) {
+                    pattern_value *entry = my_malloc(sizeof(pattern_value));
+                    entry->sym = pattern->symbol;
+                    entry->value = NIL;
+                    list_add(&entry->head, &pattern_values->head);
+                    match_code = MATCH;
+                } else {
+                    if (!(param && param->type == T_SYMBOL &&
+                          param->symbol == sym)) {
+                        match_code = SYNTAX_ERR;
+                    }
+                }
+
+            } else {
                 match_code = NOT_MATCH;
-                goto ret;
             }
+            unref(idx);
+            unref(pattern);
+            unref(args_idx);
+            goto ret;
         }
 
         if (pattern) {
@@ -849,7 +877,19 @@ pattern_match_code handle_list_pattern(pattern_value *pattern_values,
                             entry->sym = pattern->symbol;
                             entry->value = ref(param);
                             list_add(&entry->head, &pattern_values->head);
+                        } else {
+                            if (!(param && param->type == T_SYMBOL &&
+                                  param->symbol == sym)) {
+                                unref(idx);
+                                unref(pattern);
+                                unref(param);
+                                unref(args_idx);
+
+                                match_code = SYNTAX_ERR;
+                                goto ret;
+                            }
                         }
+
                     } else {
                         // Plural pattern
                         unref(idx);
