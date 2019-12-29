@@ -70,7 +70,7 @@ char *to_string(object *o, ...);
 void free_object(object *o);
 const char *object_type_name(object_type type);
 object *assert_fun_arg_type(char *func, object *o, int i, object_type type);
-bool object_symbol_eq(object *sym, char *s);
+bool object_symbol_equal(object *sym, char *s);
 
 static inline object *is_error(object *o) {
     bool ret = o && o->type == T_ERR;
@@ -308,7 +308,7 @@ object *new_compound_proc(env *env, object *params, object *body) {
         object *ptr = NIL;
         object *arg = NIL;
         for_each_object_list_entry(arg, params) {
-            ERROR(ASSERT(arg->type == T_SYMBOL,
+            ERROR(ASSERT(arg && arg->type == T_SYMBOL,
                          "compound proc: must be pass symbol as params")) {
                 unref(param_list);
                 unref(ptr);
@@ -687,25 +687,25 @@ ret:
     return ret_val;
 }
 
-typedef struct pattern_value_t {
+typedef struct pattern_bind_t {
     symbol *sym;
     object *value;
     struct list_head head;
-} pattern_value;
+} pattern_bind;
 
-void free_pattern_value(pattern_value *pattern_val) {
-    while (!list_empty(&pattern_val->head)) {
-        pattern_value *entry = list_next_entry(pattern_val, head);
+void free_pattern_bind(pattern_bind *pattern_binds) {
+    while (!list_empty(&pattern_binds->head)) {
+        pattern_bind *entry = list_next_entry(pattern_binds, head);
         list_del(&entry->head);
         unref(entry->value);
         my_free(entry);
     }
-    my_free(pattern_val);
+    my_free(pattern_binds);
 }
 
-pattern_value *pattern_values_get(pattern_value *list, symbol *sym) {
-    pattern_value *entry;
-    list_for_each_entry(entry, &list->head, head) {
+pattern_bind *pattern_bind_get(pattern_bind *binds, symbol *sym) {
+    pattern_bind *entry;
+    list_for_each_entry(entry, &binds->head, head) {
         if (entry->sym == sym) {
             return entry;
         }
@@ -719,348 +719,454 @@ typedef enum pattern_match_code {
     SYNTAX_ERR
 } pattern_match_code;
 
-pattern_match_code handle_list_pattern(pattern_value *pattern_values,
-                                       object *literals, object *list,
-                                       object *args, parse_data *data) {
+object *object_list_append(object *list, object *o) {
+    assert(!list || list->type == T_PAIR);
 
-    pattern_match_code match_code = MATCH;
-
-    symbol *ellipsis = lookup(data, "...");
-    symbol *underscore = lookup(data, "_");
-
-    object *args_idx = ref(args);
-    object *args_prev_idx = ref(args_idx); // for backtracking
-    object *param = NIL;
-
-    object *pattern = NIL;
-    for_each_object_list_entry(pattern, list) {
-        if (object_list_has_next(ref(args_idx))) {
-            param = object_list_entry(ref(args_idx));
-        } else {
-            symbol *sym = pattern->symbol;
-            if (sym == ellipsis) {
-                match_code = MATCH;
-            } else if (object_list_len(ref(idx)) == 2 &&
-                       object_symbol_eq(
-                           object_list_entry(object_list_next(ref(idx))),
-                           "...") &&
-                       !pattern_values_get(pattern_values, sym) &&
-                       sym != underscore) {
-
-                bool match_literal = false;
-                object *literal;
-                for_each_object_list_entry(literal, literals) {
-                    if (literal->symbol == sym) {
-                        match_literal = true;
-                        unref(literal);
-                        unref(idx);
-                        break;
-                    }
-                }
-
-                if (!match_literal) {
-                    pattern_value *entry = my_malloc(sizeof(pattern_value));
-                    entry->sym = pattern->symbol;
-                    entry->value = NIL;
-                    list_add(&entry->head, &pattern_values->head);
-                    match_code = MATCH;
-                } else {
-                    if (!(param && param->type == T_SYMBOL &&
-                          param->symbol == sym)) {
-                        match_code = SYNTAX_ERR;
-                    }
-                }
-
-            } else {
-                match_code = NOT_MATCH;
-            }
-            unref(idx);
-            unref(pattern);
-            unref(args_idx);
-            goto ret;
-        }
-
-        if (pattern) {
-            if (pattern->type == T_PAIR) {
-                if (param->type != T_PAIR) {
-                    unref(idx);
-                    unref(pattern);
-                    unref(param);
-                    unref(args_idx);
-
-                    match_code = NOT_MATCH;
-                    goto ret;
-                } else {
-                    pattern_match_code ret =
-                        handle_list_pattern(pattern_values, ref(literals),
-                                            ref(pattern), ref(param), data);
-
-                    if (ret != MATCH) {
-                        unref(idx);
-                        unref(pattern);
-                        unref(param);
-                        unref(args_idx);
-
-                        match_code = ret;
-                        goto ret;
-                    }
-                }
-            } else if (pattern->type == T_SYMBOL) {
-                symbol *sym = pattern->symbol;
-
-                if (sym == ellipsis) {
-                    pattern_value *entry = list_first_entry(
-                        &pattern_values->head, pattern_value, head);
-
-                    size_t rest_patterns = object_list_len(cdr(ref(idx)));
-                    size_t rest_args = object_list_len(ref(args_idx));
-                    int value_num = rest_args - rest_patterns;
-
-                    if (value_num == -1) {
-                        // entry value is empty
-                        unref(entry->value);
-                        entry->value = NIL;
-                        unref(args_idx);
-                        unref(param);
-                        args_idx = ref(args_prev_idx);
-                        continue;
-                    } else if (value_num < -1) {
-                        // not enough arguments
-                        unref(idx);
-                        unref(pattern);
-                        unref(param);
-                        unref(args_idx);
-
-                        match_code = SYNTAX_ERR;
-                        goto ret;
-                    }
-
-                    entry->value = cons(entry->value, NIL);
-                    object *ptr = ref(entry->value);
-
-                    setcdr(ref(ptr), cons(ref(param), NIL));
-                    ptr = cdr(ptr);
-                    value_num--;
-                    unref(param);
-                    args_idx = object_list_next(args_idx);
-
-                    while (value_num--) {
-                        param = object_list_entry(ref(args_idx));
-
-                        setcdr(ref(ptr), cons(ref(param), NIL));
-                        ptr = cdr(ptr);
-
-                        unref(param);
-                        unref(args_prev_idx);
-                        args_prev_idx = ref(args_idx);
-                        args_idx = object_list_next(args_idx);
-                    }
-                    unref(ptr);
-                    continue;
-                } else {
-                    if (!pattern_values_get(pattern_values, sym) &&
-                        sym != underscore) {
-                        bool match_literal = false;
-                        object *literal;
-                        for_each_object_list_entry(literal, literals) {
-                            if (literal->symbol == sym) {
-                                match_literal = true;
-                                unref(literal);
-                                unref(idx);
-                                break;
-                            }
-                        }
-
-                        if (!match_literal) {
-                            pattern_value *entry =
-                                my_malloc(sizeof(pattern_value));
-                            entry->sym = pattern->symbol;
-                            entry->value = ref(param);
-                            list_add(&entry->head, &pattern_values->head);
-                        } else {
-                            if (!(param && param->type == T_SYMBOL &&
-                                  param->symbol == sym)) {
-                                unref(idx);
-                                unref(pattern);
-                                unref(param);
-                                unref(args_idx);
-
-                                match_code = SYNTAX_ERR;
-                                goto ret;
-                            }
-                        }
-
-                    } else {
-                        // Plural pattern
-                        unref(idx);
-                        unref(pattern);
-                        unref(param);
-                        unref(args_idx);
-
-                        match_code = SYNTAX_ERR;
-                        goto ret;
-                    }
-                }
-            }
-        }
-
-        unref(param);
-        unref(args_prev_idx);
-        args_prev_idx = ref(args_idx);
-        args_idx = object_list_next(args_idx);
+    object *ret_val = NIL;
+    object *last_idx = NIL;
+    for_each_object_list(list) {
+        unref(last_idx);
+        last_idx = ref(idx);
     }
 
-    if (object_list_has_next(ref(args_idx))) {
-        unref(args_idx);
-        match_code = NOT_MATCH;
+    if (last_idx == NIL) {
+        ret_val = cons(o, NIL);
+    } else {
+        assert(cdr(ref(last_idx)) == NIL);
+        setcdr(last_idx, cons(o, NIL));
+        ret_val = ref(list);
+    }
+    unref(list);
+    return ret_val;
+}
+
+void collect_pattern(object *pattern, pattern_bind *pattern_values) {
+    if (!pattern) {
+        return;
+    }
+
+    if (pattern->type == T_SYMBOL) {
+        pattern_bind *entry = pattern_bind_get(pattern_values, pattern->symbol);
+        if (!entry) {
+            entry = my_malloc(sizeof(pattern_bind));
+            entry->sym = pattern->symbol;
+            entry->value = NIL;
+            list_add(&entry->head, &pattern_values->head);
+        }
+    } else if (pattern->type == T_PAIR) {
+        collect_pattern(car(ref(pattern)), pattern_values);
+        collect_pattern(cdr(ref(pattern)), pattern_values);
+    }
+    unref(pattern);
+    // TODO: vector
+}
+
+pattern_match_code match_ident_pattern(pattern_bind *pattern_binds,
+                                       object *literals, object *pattern,
+                                       object *expr, parse_data *data) {
+    pattern_match_code ret_val = MATCH;
+    symbol *underscore = lookup(data, "_");
+
+    // TODO: to object list contain function
+
+    object *literal;
+    for_each_object_list_entry(literal, literals) {
+        if (literal && literal->symbol == pattern->symbol) {
+            if (!(expr && expr->type == T_SYMBOL &&
+                  literal->symbol == expr->symbol)) {
+                ret_val = NOT_MATCH;
+            }
+            unref(idx);
+            unref(literal);
+            goto ret;
+        }
+    }
+
+    if (pattern->symbol != underscore) {
+        pattern_bind *entry = pattern_bind_get(pattern_binds, pattern->symbol);
+        if (!entry) {
+            entry = my_malloc(sizeof(pattern_bind));
+            entry->sym = pattern->symbol;
+            entry->value = NIL;
+            list_add(&entry->head, &pattern_binds->head);
+        }
+
+        entry->value = object_list_append(entry->value, ref(expr));
     }
 
 ret:
-    unref(args_prev_idx);
-    unref(args);
-    unref(list);
     unref(literals);
+    unref(pattern);
+    unref(expr);
+    return ret_val;
+}
+pattern_match_code match_pattern(pattern_bind *pattern_binds, object *literals,
+                                 object *pattern, object *expr,
+                                 parse_data *data);
 
-    return match_code;
+bool object_symbol_eq(object *obj_sym, symbol *sym) {
+    bool ret_val = false;
+    if (obj_sym && obj_sym->type == T_SYMBOL && obj_sym->symbol == sym) {
+        ret_val = true;
+    }
+    unref(obj_sym);
+    return ret_val;
 }
 
-pattern_match_code match_srpattern(pattern_value **pattern_values,
-                                   object *literals, object *srpattern,
-                                   object *args, parse_data *data) {
+pattern_match_code match_list_pattern(pattern_bind *pattern_binds,
+                                      object *literals, object *pattern_list,
+                                      object *expr, parse_data *data) {
 
-    if (!*pattern_values) {
-        *pattern_values = my_malloc(sizeof(pattern_value));
-        INIT_LIST_HEAD(&(*pattern_values)->head);
-    }
+    pattern_match_code ret_val = MATCH;
 
-    pattern_match_code code = handle_list_pattern(*pattern_values, literals,
-                                                  cdr(srpattern), args, data);
-    if (code != MATCH) {
-        free_pattern_value(*pattern_values);
-        *pattern_values = NULL;
-    }
-
-    // ignore first pattern
-    return code;
-}
-
-object *handle_template(pattern_value *list, object *template,
-                        parse_data *data) {
     symbol *ellipsis = lookup(data, "...");
 
-    object *ret_val = NIL;
-    object *ptr = NIL;
-    object *prev_ptr = NIL;
+    object *pattern;
+    object *expr_idx = expr;
+    for_each_object_list_entry(pattern, pattern_list) {
+        object *next_idx = object_list_next(ref(idx));
+        if (object_list_has_next(next_idx) &&
+            object_symbol_eq(object_list_entry(object_list_next(ref(idx))),
+                             ellipsis)) {
 
-    object *entry;
-    for_each_object_list_entry(entry, template) {
-
-        if (entry) {
-            object *value = NIL;
-            if (entry->type == T_PAIR) {
-                value = handle_template(list, ref(entry), data);
-            } else if (entry->type == T_SYMBOL) {
-                if (ellipsis == entry->symbol) {
-                    object *sllipsis_list = car(ref(ptr));
-
-                    if (!sllipsis_list) {
-                        /* unref(sllipsis_list); */
-                        setcdr(ref(prev_ptr), NIL);
-                        unref(ptr);
-                        ptr = ref(prev_ptr);
-                        continue;
-                    }
-
-                    setcar(ref(ptr), car(ref(sllipsis_list)));
-                    object *o;
-                    sllipsis_list = cdr(sllipsis_list);
-                    for_each_object_list_entry(o, sllipsis_list) {
-                        setcdr(ref(ptr), cons(ref(o), NIL));
-                        ptr = cdr(ptr);
-                    }
-                    unref(sllipsis_list);
-                    continue;
-                } else {
-                    pattern_value *pattern =
-                        pattern_values_get(list, entry->symbol);
-                    if (pattern) {
-                        value = ref(pattern->value);
-                    } else {
-                        value = ref(entry);
-                    }
-                }
+            int num =
+                object_list_len(ref(expr_idx)) - object_list_len(ref(idx)) + 2;
+            if (num == 0) {
+                collect_pattern(ref(pattern), pattern_binds);
             }
 
-            if (ret_val == NIL) {
-                ret_val = cons(value, NIL);
-                ptr = ref(ret_val);
-                prev_ptr = ref(ptr);
+            while (num-- > 0) {
+                if (match_pattern(pattern_binds, ref(literals), ref(pattern),
+                                  object_list_entry(ref(expr_idx)),
+                                  data) == NOT_MATCH) {
+                    unref(idx);
+                    unref(pattern);
+                    unref(expr_idx);
+
+                    ret_val = NOT_MATCH;
+                    goto ret;
+                }
+                expr_idx = object_list_next(expr_idx);
+            }
+            idx = object_list_next(idx);
+        } else {
+            if (object_list_has_next(ref(expr_idx)) &&
+                match_pattern(pattern_binds, ref(literals), ref(pattern),
+                              object_list_entry(ref(expr_idx)),
+                              data) == MATCH) {
+                expr_idx = object_list_next(expr_idx);
             } else {
-                setcdr(ref(ptr), cons(value, NIL));
-                unref(prev_ptr);
-                prev_ptr = ref(ptr);
-                ptr = cdr(ptr);
+                unref(idx);
+                unref(pattern);
+                unref(expr_idx);
+
+                ret_val = NOT_MATCH;
+                goto ret;
             }
         }
     }
 
-    unref(ptr);
-    unref(prev_ptr);
-    unref(template);
+    if (object_list_has_next(expr_idx)) {
+        ret_val = NOT_MATCH;
+    }
 
+ret:
+    unref(literals);
+    unref(pattern_list);
+
+    return ret_val;
+}
+
+pattern_match_code match_pattern(pattern_bind *pattern_binds, object *literals,
+                                 object *pattern, object *expr,
+                                 parse_data *data) {
+    pattern_match_code code = NOT_MATCH;
+
+    if (pattern) {
+        switch (pattern->type) {
+        case T_PAIR:
+            code = match_list_pattern(pattern_binds, ref(literals),
+                                      ref(pattern), ref(expr), data);
+            break;
+        case T_SYMBOL:
+            code = match_ident_pattern(pattern_binds, ref(literals),
+                                       ref(pattern), ref(expr), data);
+            break;
+        case T_STRING:
+        case T_NUMBER:
+            // TODO: impl equal?
+            code = NOT_MATCH;
+            break;
+        default:
+            code = SYNTAX_ERR;
+            break;
+        }
+    } else {
+        if (!expr) {
+            code = MATCH;
+        }
+    }
+    unref(literals);
+    unref(pattern);
+    unref(expr);
+    return code;
+}
+
+pattern_match_code match_srpattern(pattern_bind **pattern_binds,
+                                   object *literals, object *srpattern,
+                                   object *expr, parse_data *data) {
+
+    if (!*pattern_binds) {
+        *pattern_binds = my_malloc(sizeof(pattern_bind));
+        INIT_LIST_HEAD(&(*pattern_binds)->head);
+    }
+
+    // ignore first pattern
+    pattern_match_code code =
+        match_pattern(*pattern_binds, literals, cdr(srpattern), expr, data);
+    if (code != MATCH) {
+        free_pattern_bind(*pattern_binds);
+        *pattern_binds = NULL;
+    }
+    return code;
+}
+
+object *object_list_entry_ref(object *list, size_t index) {
+    object *ret_val = NIL;
+    int i = -1;
+    object *o;
+    for_each_object_list_entry(o, list) {
+        i++;
+        if (i == index) {
+            ret_val = o;
+            unref(idx);
+            break;
+        }
+    }
+
+    if (i != index) {
+        ret_val = new_error("list len = %d < index = %d", i, index);
+    }
+
+    unref(list);
+    return ret_val;
+}
+
+typedef enum transform_tempalte_code {
+    TTC_SYNTAX_ERR,
+    TTC_INDEX_RANGE_ERR,
+    TTC_OK
+} transform_tempalte_code;
+
+transform_tempalte_code transform_template(object **result,
+                                           pattern_bind *pattern_binds,
+                                           object *template, size_t index,
+                                           bool is_ellipsis_ident,
+                                           parse_data *data);
+
+transform_tempalte_code
+transform_list_template(object **result, pattern_bind *pattern_binds,
+                        object *template_list, size_t index,
+                        bool is_ellipsis_ident, parse_data *data) {
+    assert(*result == NIL);
+
+    transform_tempalte_code ret_val = TTC_OK;
+
+    symbol *ellipsis = lookup(data, "...");
+    object *template;
+
+    object *ptr = NIL;
+    for_each_object_list_entry(template, template_list) {
+        object *next_idx = object_list_next(ref(idx));
+        if (object_list_has_next(next_idx) &&
+            object_symbol_eq(object_list_entry(object_list_next(ref(idx))),
+                             ellipsis) &&
+            !is_ellipsis_ident) {
+            int i = 0;
+            object *ret = NIL;
+            while ((ret_val = transform_template(
+                        &ret, pattern_binds, ref(template), i,
+                        is_ellipsis_ident, data)) == TTC_OK) {
+                if (!*result) {
+                    *result = cons(ret, NIL);
+                    ptr = ref(*result);
+                } else {
+                    setcdr(ref(ptr), cons(ret, NIL));
+                    ptr = cdr(ptr);
+                }
+                ret = NIL;
+                i++;
+            }
+
+            if (ret_val == TTC_SYNTAX_ERR) {
+                unref(idx);
+                unref(template);
+                break;
+            } else if (ret_val == TTC_INDEX_RANGE_ERR) {
+                ret_val = TTC_OK;
+            }
+
+            idx = object_list_next(idx);
+        } else {
+            object *ret = NIL;
+            ret_val = transform_template(&ret, pattern_binds, ref(template),
+                                         index, is_ellipsis_ident, data);
+            if (ret_val == TTC_OK) {
+                if (!*result) {
+                    *result = cons(ret, NIL);
+                    ptr = ref(*result);
+                } else {
+                    setcdr(ref(ptr), cons(ret, NIL));
+                    ptr = cdr(ptr);
+                }
+            } else {
+                assert(ret == NIL);
+
+                unref(idx);
+                unref(template);
+                break;
+            }
+        }
+    }
+
+    if (ret_val != TTC_OK) {
+        unref(*result);
+        *result = NIL;
+    }
+
+    unref(ptr);
+    unref(template_list);
+    return ret_val;
+}
+
+transform_tempalte_code
+transform_symbol_template(object **result, pattern_bind *pattern_binds,
+                          object *template, size_t index, parse_data *data) {
+    assert(*result == NIL);
+    assert(template && template->type == T_SYMBOL);
+    
+    transform_tempalte_code code = TTC_OK;
+    pattern_bind *entry = pattern_bind_get(pattern_binds, template->symbol);
+
+    if (entry) {
+        object *ret = object_list_entry_ref(ref(entry->value), index);
+        ERROR(ref(ret)) {
+            unref(error);
+            unref(ret);
+            code = TTC_INDEX_RANGE_ERR;
+            goto ret;
+        }
+        *result = ret;
+    } else {
+        *result = ref(template);
+    }
+
+ret:
+    unref(template);
+    return code;
+}
+
+// is_ellipsis_ident
+transform_tempalte_code transform_template(object **result,
+                                           pattern_bind *pattern_binds,
+                                           object *template, size_t index,
+                                           bool is_ellipsis_ident,
+                                           parse_data *data) {
+    assert(*result == NIL);
+
+    transform_tempalte_code ret_val = TTC_OK;
+
+    symbol *ellipsis = lookup(data, "...");
+
+    if (template) {
+        switch (template->type) {
+        case T_PAIR:
+            if (object_symbol_eq(object_list_entry(ref(template)), ellipsis) &&
+                !is_ellipsis_ident) {
+                object *next_idx = object_list_next(ref(template));
+                if (object_list_has_next(ref(next_idx))) {
+                    ret_val = transform_template(result, pattern_binds,
+                                                 object_list_entry(next_idx),
+                                                 index, true, data);
+                } else {
+                    unref(next_idx);
+                    ret_val = TTC_SYNTAX_ERR;
+                }
+            } else {
+                ret_val = transform_list_template(result, pattern_binds,
+                                                  ref(template), index,
+                                                  is_ellipsis_ident, data);
+            }
+
+            break;
+        case T_SYMBOL:
+            ret_val = transform_symbol_template(result, pattern_binds,
+                                                ref(template), index, data);
+            break;
+        case T_STRING:
+        case T_NUMBER:
+            *result = ref(template);
+            break;
+        default:
+            break;
+        }
+    } else {
+        *result = NIL;
+    }
+    unref(template);
     return ret_val;
 }
 
 object *macro_proc_call(env *e, object *func, object *args, parse_data *data) {
     macro_proc *proc = func->macro_proc;
-    printf("literals: ");
-    object_print(ref(proc->literals), e);
-    printf("\n");
-    printf("syntax rules: ");
-    object_print(ref(proc->syntax_rules), e);
-    printf("\n");
 
-    printf("args: ");
-    object_print(ref(args), e);
-    printf("\n");
+    /* printf("literals: "); */
+    /* object_print(ref(proc->literals), e); */
+    /* printf("\n"); */
+    /* printf("syntax rules: "); */
+    /* object_print(ref(proc->syntax_rules), e); */
+    /* printf("\n"); */
+
+    /* printf("args: "); */
+    /* object_print(ref(args), e); */
+    /* printf("\n"); */
 
     object *ret_val = NIL;
+    transform_tempalte_code ttcode = TTC_SYNTAX_ERR;
     object *syntax_rule;
     for_each_object_list_entry(syntax_rule, proc->syntax_rules) {
         object *srpattern = car(ref(syntax_rule));
-        object *template = car(cdr(ref(syntax_rule)));
 
-        printf("srpattern: ");
-        object_print(cdr(ref(srpattern)), e);
-        printf("\n");
-
-        printf("template: ");
-        object_print(ref(template), e);
-        printf("\n");
-
-        pattern_value *pattern_values = NULL;
+        /* printf("srpattern: "); */
+        /* object_print(cdr(ref(srpattern)), e); */
+        /* printf("\n"); */
+        
+        pattern_bind *pattern_binds = NULL;
         pattern_match_code ret = match_srpattern(
-            &pattern_values, ref(proc->literals), srpattern, ref(args), data);
+            &pattern_binds, ref(proc->literals), srpattern, ref(args), data);
 
         if (ret == MATCH) {
-            pattern_value *entry;
-            list_for_each_entry(entry, &pattern_values->head, head) {
-                char *s = to_string(ref(entry->value));
-                printf("%s = %s\n", entry->sym->name, s);
-                my_free(s);
-            }
+            pattern_bind *entry;
+            /* list_for_each_entry(entry, &pattern_binds->head, head) { */
+            /*     char *s = to_string(ref(entry->value)); */
+            /*     printf("%s = %s\n", entry->sym->name, s); */
+            /*     my_free(s); */
+            /* } */
+            object *template = car(cdr(ref(syntax_rule)));
+            /* printf("template: "); */
+            /* object_print(ref(template), e); */
+            /* printf("\n"); */
 
-            ret_val = handle_template(pattern_values, template, data);
-            free_pattern_value(pattern_values);
+            ttcode = transform_template(&ret_val, pattern_binds, template, 0,
+                                        false, data);
+            free_pattern_bind(pattern_binds);
             unref(syntax_rule);
             unref(idx);
             break;
         }
-
-        unref(template);
     }
 
-    if (!ret_val) {
+    if (ttcode != TTC_OK) {
         ret_val = new_error("Exception: invalid syntax");
     } else {
         printf("template value: ");
@@ -1416,6 +1522,13 @@ object *primitive_if(env *e, object *args, parse_data *data) {
     object *consequent = car(cdr(ref(args)));
     object *alternate = arg_len == 3 ? car(cdr(cdr(ref(args)))) : NIL;
 
+    ERROR(ref(test)) {
+        unref(test);
+        unref(consequent);
+        unref(alternate);
+        ret_val = error;
+        goto ret;
+    }
     if (test != &False) {
         // true
         unref(alternate);
@@ -1426,13 +1539,13 @@ object *primitive_if(env *e, object *args, parse_data *data) {
         ret_val = alternate ? eval(alternate, e, data) : NIL;
     }
     unref(test);
-
+    
 ret:
     unref(args);
     return ret_val;
 }
 
-bool object_symbol_eq(object *sym, char *s) {
+bool object_symbol_equal(object *sym, char *s) {
     if (!sym || sym->type != T_SYMBOL) {
         unref(sym);
         return false;
@@ -1478,7 +1591,7 @@ object *primitive_cond(env *e, object *args, parse_data *data) {
 
     for_each_object_list_entry(clause, args) {
         test = car(ref(clause));
-        if (object_symbol_eq(ref(test), "else")) {
+        if (object_symbol_equal(ref(test), "else")) {
             object *rest = cdr(ref(idx));
             ERROR(ASSERT(!rest, "else clause isn't last")) {
                 unref(idx);
@@ -1506,7 +1619,7 @@ object *primitive_cond(env *e, object *args, parse_data *data) {
 
         /* test = eval(test, e, data); */
         object *arrow = car(cdr(ref(clause)));
-        if (object_symbol_eq(arrow, "=>")) {
+        if (object_symbol_equal(arrow, "=>")) {
             // (<test> => <expression>)
             // expression = procedure object
             // TODO: impl
