@@ -8,9 +8,7 @@ typedef enum {
     T_PRIMITIVE_PROC = 0x1,
     T_COMPOUND_PROC = 0x2,
     T_PROCEDURE = T_PRIMITIVE_PROC | T_COMPOUND_PROC,
-    T_FIXNUM = 0x4,
-    T_FLONUM = 0x8,
-    T_NUMBER = T_FIXNUM | T_FLONUM,
+    T_NUMBER = 0x4,
     T_BOOLEAN = 0x10,
     T_SYMBOL = 0x20,
     T_STRING = 0x40,
@@ -82,12 +80,29 @@ struct macro_proc_t {
 
 typedef struct macro_proc_t macro_proc;
 
+enum radix {
+  RADIX_2 = 2,
+  RADIX_8 = 8,
+  RADIX_10 = 10,
+  RADIX_16 = 16,
+};
+enum exactness { EXACTNESS_FLO, EXACTNESS_FIX, EXACTNESS_UNKOWN };
+
+enum exactness to_exactness_flag(char c);
+enum radix to_radix_flag(char c);
+
+struct number_t {
+    enum exactness exactness;
+    u64 real_part;
+    u64 imaginary_part;
+};
+typedef struct number_t number;
+
 struct object_t {
     object_type type;
     int ref_count;
     union {
-        int64_t int_val;
-        long double float_val;
+        number *number;
         bool bool_val;
         char char_val;
         primitive_proc *primitive_proc;
@@ -107,16 +122,16 @@ struct parse_data {
 
 symbol *lookup(parse_data *, char *);
 object *new_boolean(bool val);
-object *new_fix_number(int64_t val);
 object *new_symbol(symbol *s);
 
 string *make_string(char *, size_t);
 object *new_string(string *);
+number *make_number(enum exactness, u64, u64);
+object *new_number(number *);
 
 object *cons(object *car, object *cdr);
 object *car(object *pair);
 object *cdr(object *pair);
-object *setcdr(object *list, object *cdr);
 
 object *NIL;
 

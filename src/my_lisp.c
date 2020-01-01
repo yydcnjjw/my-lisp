@@ -8,7 +8,8 @@
 
 #include <my-os/list.h>
 
-static inline object *object_list_entry(object *list) {
+    static inline object *
+    object_list_entry(object *list) {
     assert(list);
     return list->type == T_PAIR ? car(list) : list;
 }
@@ -123,10 +124,58 @@ static inline object *new_object(object_type type) {
 
 object *new_boolean(bool val) { return val ? ref(&True) : ref(&False); }
 
-object *new_fix_number(int64_t val) {
-    object *fix_number = new_object(T_FIXNUM);
-    fix_number->int_val = val;
-    return fix_number;
+number *make_number(enum exactness exactness, u64 real, u64 imaginary) {
+    number *number = my_malloc(sizeof(struct number_t));
+    number->exactness = exactness;
+    number->real_part = real;
+    number->imaginary_part = imaginary;
+    return number;
+}
+
+object *new_number(number *number) {
+    object *o = new_object(T_NUMBER);
+    o->number = number;
+    return o;
+}
+
+void free_number(object *o) { my_free(o->number); }
+
+enum exactness to_exactness_flag(char c) {
+    enum exactness exactness_flag = EXACTNESS_UNKOWN;
+    switch (c) {
+    case 'e':
+    case 'E':
+        exactness_flag = EXACTNESS_FIX;
+        break;
+    case 'i':
+    case 'I':
+        exactness_flag = EXACTNESS_FLO;
+        break;
+    }
+    return exactness_flag;
+}
+
+enum radix to_radix_flag(char c) {
+    enum radix radix_flag = RADIX_10;
+    switch (c) {
+    case 'b':
+    case 'B':
+        radix_flag = RADIX_2;
+        break;
+    case 'o':
+    case 'O':
+        radix_flag = RADIX_8;
+        break;
+    case 'd':
+    case 'D':
+        radix_flag = RADIX_10;
+        break;
+    case 'x':
+    case 'X':
+        radix_flag = RADIX_16;
+        break;
+    }
+    return radix_flag;
 }
 
 static unsigned symhash(char *sym) {
@@ -450,6 +499,9 @@ void free_object(object *o) {
     case T_ERR:
         free_error(o);
         break;
+    case T_NUMBER:
+        free_number(o);
+        break;
     case T_STRING:
         free_string(o);
         break;
@@ -507,6 +559,34 @@ char *list_to_string(object *list) {
     return list_str;
 }
 
+char *number_to_string(object *o) {
+#define NUMBER_BUF_SIZE 1024
+    char buf[NUMBER_BUF_SIZE] = {'\0'};
+    number *number = o->number;
+    assert(number->exactness != EXACTNESS_UNKOWN);
+
+    switch (number->exactness) {
+    case EXACTNESS_FIX:
+        if (number->imaginary_part == 0) {
+            snprintf(buf, NUMBER_BUF_SIZE, "%Li", (long long)number->real_part);
+        } else {
+            snprintf(buf, NUMBER_BUF_SIZE, "%Li%+Lii", (long long)number->real_part,
+                     (long long)number->imaginary_part);
+        }
+        break;
+    case EXACTNESS_FLO:
+        if (number->imaginary_part == 0) {
+            snprintf(buf, NUMBER_BUF_SIZE, "%f", (double)number->real_part);
+        } else {
+            snprintf(buf, NUMBER_BUF_SIZE, "%f%+fi", (double)number->real_part,
+                     (double)number->imaginary_part);
+        }
+        break;
+    }
+    unref(o);
+    return my_strdup(buf);
+}
+
 char *to_string(object *o, ...) {
     va_list args;
     va_start(args, o);
@@ -540,10 +620,9 @@ char *to_string(object *o, ...) {
         o_str = o->str->str_p;
         break;
     }
-    case T_FIXNUM:
-    case T_FLONUM: {
-        len += sprintf(buf, "%li", o->int_val);
-        o_str = buf;
+    case T_NUMBER: {
+        o_str = number_to_string(ref(o));
+        len += strlen(o_str);
         break;
     }
     case T_BOOLEAN:
@@ -577,7 +656,7 @@ char *to_string(object *o, ...) {
     char *str = my_malloc(len);
     if (o_str) {
         snprintf(str, len, fmt, o_str);
-        if (o->type == T_PAIR) {
+        if (o->type == T_PAIR || o->type == T_NUMBER) {
             my_free(o_str);
         }
     }
@@ -1044,7 +1123,7 @@ transform_symbol_template(object **result, pattern_bind *pattern_binds,
                           object *template, size_t index, parse_data *data) {
     assert(*result == NIL);
     assert(template && template->type == T_SYMBOL);
-    
+
     transform_tempalte_code code = TTC_OK;
     pattern_bind *entry = pattern_bind_get(pattern_binds, template->symbol);
 
@@ -1140,7 +1219,7 @@ object *macro_proc_call(env *e, object *func, object *args, parse_data *data) {
         /* printf("srpattern: "); */
         /* object_print(cdr(ref(srpattern)), e); */
         /* printf("\n"); */
-        
+
         pattern_bind *pattern_binds = NULL;
         pattern_match_code ret = match_srpattern(
             &pattern_binds, ref(proc->literals), srpattern, ref(args), data);
@@ -1249,8 +1328,6 @@ const char *object_type_name(object_type type) {
     case T_PRIMITIVE_PROC:
     case T_COMPOUND_PROC:
         return "procedure";
-    case T_FIXNUM:
-    case T_FLONUM:
     case T_NUMBER:
         return "number";
     case T_BOOLEAN:
@@ -1287,7 +1364,7 @@ object *primitive_op(env *e, object *args, char op, parse_data *data) {
         goto ret;
     }
 
-    int value = first->int_val;
+    int value = first->number->real_part;
     unref(first);
 
     int i = 1;
@@ -1311,7 +1388,7 @@ object *primitive_op(env *e, object *args, char op, parse_data *data) {
             goto loop_exit;
         }
 
-        int eval_val = o->int_val;
+        int eval_val = o->number->real_part;
         unref(o);
         switch (op) {
         case '+':
@@ -1333,7 +1410,7 @@ object *primitive_op(env *e, object *args, char op, parse_data *data) {
 
         i++;
     }
-    ret_val = new_fix_number(value);
+    ret_val = new_number(make_number(EXACTNESS_FIX, 0, 0));
 
 loop_exit:
     unref(rest_args);
@@ -1539,7 +1616,7 @@ object *primitive_if(env *e, object *args, parse_data *data) {
         ret_val = alternate ? eval(alternate, e, data) : NIL;
     }
     unref(test);
-    
+
 ret:
     unref(args);
     return ret_val;

@@ -248,6 +248,18 @@ void yyfree ( void * , yyscan_t yyscanner );
 #ifdef YY_HEADER_EXPORT_START_CONDITIONS
 #define INITIAL 0
 #define string 1
+#define prefix 2
+#define suffix 3
+#define mantissa_width 4
+#define radix 5
+#define radix10 6
+#define real 7
+#define real10 8
+#define ureal 9
+#define ureal10 10
+#define unaninf 11
+#define naninf 12
+#define complex 13
 
 #endif
 
@@ -519,9 +531,9 @@ extern int yylex \
 #undef yyTABLES_NAME
 #endif
 
-#line 101 "my_lisp.l"
+#line 336 "my_lisp.l"
 
 
-#line 525 "my_lisp.lex.h"
+#line 537 "my_lisp.lex.h"
 #undef yyIN_HEADER
 #endif /* yyHEADER_H */

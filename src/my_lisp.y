@@ -18,7 +18,7 @@
 }
 
 %union {
-    int64_t fix_num;
+    number *num;
     symbol *symbol;
     object *obj;
     string *str;
@@ -30,15 +30,13 @@
 
 %token <symbol> IDENTIFIER
 %token BOOLEAN_T BOOLEAN_F
-%token <fix_num> NUMBER
+%token <num> NUMBER
 %token character
 %token <str> STRING
 
 %token END_OF_FILE
 
 %type <obj> number boolean symbol string list_item datum lexeme_datum compound_datum list abbreviation
-
-%token EOL
 
 %start exp
 
@@ -61,7 +59,7 @@ lexeme_datum: boolean
 string: STRING { $$ = new_string($1); }
 ;
 
-number: NUMBER { $$ = new_fix_number($1); }
+number: NUMBER { $$ = new_number($1); }
 ;
 
 boolean: BOOLEAN_T  { $$ = new_boolean(true); }

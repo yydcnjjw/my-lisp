@@ -16,3 +16,4 @@ add_executable(my-lisp
   ${FLEX_MyScanner_OUTPUTS}  
   ${BISON_MyParser_OUTPUTS}
   )
+target_link_libraries(my-lisp -lm)
