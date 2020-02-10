@@ -1,14 +1,15 @@
+%option noyyalloc noyyrealloc noyyfree
 %option noyywrap nodefault 8bit
 %option yylineno
 %option reentrant bison-bridge bison-locations
+%option never-interactive
 /* %option debug */
 %option header-file="my_lisp.lex.h"
 
 %{
 #include "my_lisp.tab.h"
 #include "my_lisp.h"
-#include <math.h>
-
+    void yyerror(YYLTYPE *yylloc, yyscan_t scanner, parse_data *data, const char *s, ...);
     enum radix radix_flag = RADIX_10;
     enum exactness exactness_flag = EXACTNESS_UNKOWN;
     enum exactness exactness_derivation = EXACTNESS_FIX;
@@ -68,7 +69,7 @@ _REAL10_FLO ({SIGN}{_UREAL10_FLO})
 
 SIGN [-+]
 
-%x string
+%x string character
 %x prefix suffix mantissa_width
 %x radix radix10
 %x real real10 ureal ureal10 unaninf naninf
@@ -163,11 +164,13 @@ SIGN [-+]
 
 <INITIAL,ureal10,real10>{
 {UREAL10} {
-    tmp_number = atoll(yytext);
+    s64 n = atoll(yytext);
+    TYPE_CPY(&tmp_number, &n);
     BEGIN(suffix);
 }
 {_UREAL10_FLO} {
-    tmp_number = atof(yytext);
+    double n = atof(yytext);
+    TYPE_CPY(&tmp_number, &n);
     exactness_derivation = EXACTNESS_FLO;
     BEGIN(suffix);
 }
@@ -178,12 +181,14 @@ SIGN [-+]
 
 <INITIAL,real10>{
 {REAL10} {
-    tmp_number = atoll(yytext);
+    s64 n = atoll(yytext);
+    TYPE_CPY(&tmp_number, &n);    
     BEGIN(suffix);
 }
 
 {_REAL10_FLO} {
-    tmp_number = atof(yytext);
+    double n = atof(yytext);
+    TYPE_CPY(&tmp_number, &n);    
     exactness_derivation = EXACTNESS_FLO;
     BEGIN(suffix);
 }
@@ -195,12 +200,14 @@ SIGN [-+]
 
 <suffix>{
 {EXPONENT_MARK}{SIGN}?{DIGIT10}+ {
-    long long exp = atoll(yytext+1);
-    exp = (long long)pow(10, exp);
+    s64 exp = atoll(yytext+1);
+    exp = (s64)pow(10, exp);
     if (exactness_derivation == EXACTNESS_FIX) {
-        tmp_number = (long long)tmp_number * exp;
+        s64 n = (*(s64 *)&tmp_number) * exp;
+        TYPE_CPY(&tmp_number, &n);
     } else if (exactness_derivation == EXACTNESS_FLO) {
-        tmp_number = (double)tmp_number * exp;
+        double n = (*(double*)&tmp_number) * exp;
+        TYPE_CPY(&tmp_number, &n);
     }
     BEGIN(mantissa_width);
 }
@@ -222,7 +229,8 @@ SIGN [-+]
 
 <ureal,real>{
 {UREAL} {
-    tmp_number = strtoll(yytext, 0, radix_flag);
+    s64 n = strtoll(yytext, 0, radix_flag);
+    TYPE_CPY(&tmp_number, &n);
     BEGIN(complex);
 }
     
@@ -233,7 +241,8 @@ SIGN [-+]
 
 <real>{
 {REAL} {
-    tmp_number = strtoll(yytext, 0, radix_flag);
+    s64 n = strtoll(yytext, 0, radix_flag);
+    TYPE_CPY(&tmp_number, &n);
     BEGIN(complex);
 }
 
@@ -250,10 +259,12 @@ SIGN [-+]
     BEGIN(INITIAL);
 }
 "+i" {
-    imaginary_part = 1;
+    s64 n = 1;
+    TYPE_CPY(&imaginary_part, &n);
 }
 "-i" {
-    imaginary_part = -1;
+    s64 n = -1;
+    TYPE_CPY(&imaginary_part, &n);
 }
 }
 
@@ -276,7 +287,7 @@ SIGN [-+]
         BEGIN(INITIAL);
     }
     imaginary_sign = yytext[0];
-    real_part = tmp_number;
+    TYPE_CPY(&real_part, &tmp_number);
     if (radix_flag == RADIX_10) {
         BEGIN(ureal10);
     } else {
@@ -285,28 +296,43 @@ SIGN [-+]
 }
 
 "i" {
+    double n;
     if (imaginary_sign == '-') {
         if (exactness_derivation == EXACTNESS_FLO) {
-            imaginary_part = -(double)tmp_number;
+            double n = -TO_TYPE(tmp_number, double);
+            TYPE_CPY(&imaginary_part, &n);
         } else if (exactness_derivation == EXACTNESS_FIX){
-            imaginary_part = -(long long)tmp_number;
+            s64 n = -TO_TYPE(tmp_number, s64);
+            TYPE_CPY(&imaginary_part, &n);
         }
     } else {
-        imaginary_part = tmp_number;
+        TYPE_CPY(&imaginary_part, &tmp_number);
     }
 }
   
 .|\n {
     yyless(yyleng - 1);
     BEGIN(INITIAL);
-
-    if (exactness_flag != EXACTNESS_UNKOWN) {
-        exactness_derivation = exactness_flag;
-    }
     
     if (imaginary_sign == '\0') {
-        real_part = tmp_number;
+        TYPE_CPY(&real_part, &tmp_number);
     }
+    if (exactness_flag == EXACTNESS_FLO &&
+        exactness_derivation == EXACTNESS_FIX) {
+        double n = (double)TO_TYPE(real_part, s64);
+        TYPE_CPY(&real_part, &n);
+        n = (double)TO_TYPE(imaginary_part, s64);
+        TYPE_CPY(&imaginary_part, &n);
+        exactness_derivation = EXACTNESS_FLO;
+    } else if (exactness_flag == EXACTNESS_FIX &&
+               exactness_derivation == EXACTNESS_FLO){
+        s64 n = (s64)TO_TYPE(real_part, double);
+        TYPE_CPY(&real_part, &n);
+        n = (s64)TO_TYPE(imaginary_part, double);
+        TYPE_CPY(&imaginary_part, &n);
+        exactness_derivation = EXACTNESS_FIX;
+    }
+    
     yylval->num = make_number(exactness_derivation, real_part, imaginary_part);
     
     radix_flag = RADIX_10;
@@ -320,6 +346,30 @@ SIGN [-+]
 }
 }
 
+"#\\" { BEGIN(character); }
+<character>{
+"nul" {
+    BEGIN(INITIAL);
+    yylval->ch = '\v';
+    return CHARACTER;
+}
+"alarm" {
+    BEGIN(INITIAL);
+    yylval->ch = '\v';
+    return CHARACTER;
+}
+"backspace" { BEGIN(INITIAL); yylval->ch = 'a';  return CHARACTER; }
+"tab" { BEGIN(INITIAL); yylval->ch = 'a'; return CHARACTER; }
+"linefeed" { BEGIN(INITIAL); yylval->ch = 'a';  return CHARACTER; }
+"newline" { BEGIN(INITIAL); yylval->ch = 'a'; return CHARACTER; }
+"vtab" { BEGIN(INITIAL); yylval->ch = 'a'; return CHARACTER; }
+"page" { BEGIN(INITIAL); yylval->ch = 'a'; return CHARACTER; }
+"return" { BEGIN(INITIAL); yylval->ch = 'a'; return CHARACTER; }
+"esc" { BEGIN(INITIAL); yylval->ch = 'a'; return CHARACTER; }
+"space" { BEGIN(INITIAL); yylval->ch = 'a'; return CHARACTER; }
+"delete" { BEGIN(INITIAL); yylval->ch = 'a'; return CHARACTER; }
+}
+
 "#T" |
 "#t" { return BOOLEAN_T; }
 
@@ -329,7 +379,7 @@ SIGN [-+]
 ;.*$
 {WS}* { }
 
-. { yyerror(yylloc, yyscanner, yyextra, "Mystery character %c\n", *yytext); }
-
 <<EOF>> { return END_OF_FILE; }
+
+. { yyerror(yylloc, yyscanner, yyextra, "Mystery character %c\n", *yytext); }
 %%

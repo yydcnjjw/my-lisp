@@ -1,5 +1,4 @@
 #include <stdarg.h>
-#include <stdio.h>
 
 #include "my_lisp.h"
 #include "my_lisp.tab.h"
@@ -12,20 +11,20 @@ void yyerror(YYLTYPE *yylloc, yyscan_t scanner, parse_data *data, const char *s,
     va_list ap;
     va_start(ap, s);
 
-    fprintf(stderr, "%d: error: ", yyget_lineno(scanner));
+    my_printf("%d: error: ", yyget_lineno(scanner));
 
-    vfprintf(stderr, s, ap);
-    fprintf(stderr, "\n");
+    my_printf(s, ap);
+    my_printf("\n");
     va_end(ap);
 }
 
-void eof_handle(void) {
-    IS_EOF = true;
-}
+void my_error(const char *msg) { my_printf(msg); }
+
+void eof_handle(void) { IS_EOF = true; }
 
 void init_parse_data(parse_data *data) {
     if (!data) {
-        printf("init parse data failure\n");
+        my_printf("init parse data failure\n");
     }
 
     data->ast = NULL;
@@ -45,37 +44,56 @@ int main(int argc, char *argv[]) {
     env_add_primitives(env, &data);
 
     if (yylex_init_extra(&data, &scanner)) {
-        perror("init alloc failed");
+        my_printf("init alloc failed");
         return 1;
     }
+
+#ifdef MY_OS
+    const char *str = "(define x 1)\n(define y 1)";
+    int len = strlen(str);
+    char *buf = my_malloc(len + 1);
+    memcpy(buf, str, len);
+    YY_BUFFER_STATE my_string_buffer = yy_scan_string(buf, scanner);
+    yy_switch_to_buffer(my_string_buffer, scanner);
+#else
     FILE *in;
     if (argc == 2) {
         in = fopen(argv[1], "r");
         yyset_in(in, scanner);
     }
+#endif // MY_OS
 
     yyset_debug(1, scanner);
-
     while (!IS_EOF) {
         int ret = yyparse(scanner, &data);
         if (!ret) {
-            printf("eval: ");
+            my_printf("eval: ");
             object_print(ref(data.ast), env);
-            printf("\n");
-            
-            object* value = eval(data.ast, env, &data);            
+            my_printf("\n");
+
+            object *value = eval(data.ast, env, &data);
             object_print(value, env);
-            printf("\n");
+            my_printf("\n");
             data.ast = NULL;
         } else {
             break;
         }
     }
-    
+
+#ifdef MY_OS
+    yy_delete_buffer(my_string_buffer, scanner);
+    my_free(buf);
+#else
+    fclose(in);
+#endif // MY_OS
+
     yylex_destroy(scanner);
     free_env(env);
     free_lisp(&data);
-
-    fclose(in);
     return 0;
 }
+
+// TODO:
+/* double pow(double x, double y) { */
+
+/* } */

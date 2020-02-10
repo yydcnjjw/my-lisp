@@ -2,15 +2,10 @@
 #include <my_lisp.tab.h>
 
 #include <stdarg.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 
 #include <my-os/list.h>
 
-    static inline object *
-    object_list_entry(object *list) {
-    assert(list);
+static inline object *object_list_entry(object *list) {
     return list->type == T_PAIR ? car(list) : list;
 }
 
@@ -21,7 +16,6 @@ static inline bool object_list_has_next(object *list) {
 }
 
 static inline object *object_list_next(object *idx) {
-    assert(idx);
     return idx->type == T_PAIR ? cdr(idx) : (unref(idx), NULL);
 }
 
@@ -37,30 +31,7 @@ static inline object *object_list_next(object *idx) {
          idx && (idx->type == T_PAIR ? true : (unref(idx), false));            \
          idx = cdr(idx))
 
-void *my_malloc(size_t size) {
-    void *ret = malloc(size);
-    if (!ret) {
-        printf("malloc error\n");
-        exit(0);
-    }
-    bzero(ret, size);
-    return ret;
-}
-
-void my_free(void *o) {
-    if (o) {
-        free(o);
-    }
-}
-
-void *my_realloc(void *p, size_t size) {
-    if (!p) {
-        return my_malloc(size);
-    }
-    return realloc(p, size);
-}
-
-char *my_strdup(char *s) { return strdup(s); }
+#define NUMBER_ZERO(exactness) make_number(exactness, 0, 0)
 
 static object True = {.type = T_BOOLEAN, .bool_val = true, .ref_count = 1};
 static object False = {.type = T_BOOLEAN, .bool_val = false, .ref_count = 1};
@@ -139,6 +110,12 @@ object *new_number(number *number) {
 }
 
 void free_number(object *o) { my_free(o->number); }
+
+object *new_character(u16 ch) {
+    object *o = new_object(T_CHARACTER);
+    o->char_val = ch;
+    return o;
+}
 
 enum exactness to_exactness_flag(char c) {
     enum exactness exactness_flag = EXACTNESS_UNKOWN;
@@ -323,7 +300,7 @@ object *new_error(const char *fmt, ...) {
     va_start(args, fmt);
 #define ERR_MSG_BUF_SIZE 512
     char buf[ERR_MSG_BUF_SIZE] = {'\0'};
-    vsnprintf(buf, ERR_MSG_BUF_SIZE, fmt, args);
+    my_vsprintf(buf, fmt, args);
     va_end(args);
 
     err->msg = my_strdup(buf);
@@ -529,7 +506,7 @@ void free_object(object *o) {
 char *list_to_string(object *list) {
     int len = 3; /* default "()" total 3 with memory */
     char *list_str = my_malloc(len);
-
+    
     strcat(list_str, "(");
     object *o;
     for_each_object_list_entry(o, list) {
@@ -563,24 +540,26 @@ char *number_to_string(object *o) {
 #define NUMBER_BUF_SIZE 1024
     char buf[NUMBER_BUF_SIZE] = {'\0'};
     number *number = o->number;
-    assert(number->exactness != EXACTNESS_UNKOWN);
+    /* assert(number->exactness != EXACTNESS_UNKOWN); */
 
     switch (number->exactness) {
     case EXACTNESS_FIX:
         if (number->imaginary_part == 0) {
-            snprintf(buf, NUMBER_BUF_SIZE, "%Li", (long long)number->real_part);
+            my_sprintf(buf, "%Li", TO_TYPE(number->real_part, s64));
         } else {
-            snprintf(buf, NUMBER_BUF_SIZE, "%Li%+Lii", (long long)number->real_part,
-                     (long long)number->imaginary_part);
+            my_sprintf(buf, "%Li%+Lii", TO_TYPE(number->real_part, s64),
+                       TO_TYPE(number->imaginary_part, s64));
         }
         break;
     case EXACTNESS_FLO:
         if (number->imaginary_part == 0) {
-            snprintf(buf, NUMBER_BUF_SIZE, "%f", (double)number->real_part);
+            my_sprintf(buf, "%f", TO_TYPE(number->real_part, double));
         } else {
-            snprintf(buf, NUMBER_BUF_SIZE, "%f%+fi", (double)number->real_part,
-                     (double)number->imaginary_part);
+            my_sprintf(buf, "%f%+fi", TO_TYPE(number->real_part, double),
+                       TO_TYPE(number->imaginary_part, double));
         }
+        break;
+    default:
         break;
     }
     unref(o);
@@ -655,7 +634,7 @@ char *to_string(object *o, ...) {
 
     char *str = my_malloc(len);
     if (o_str) {
-        snprintf(str, len, fmt, o_str);
+        my_sprintf(str, fmt, o_str);
         if (o->type == T_PAIR || o->type == T_NUMBER) {
             my_free(o_str);
         }
@@ -667,7 +646,7 @@ char *to_string(object *o, ...) {
 
 void object_print(object *o, env *e) {
     char *s = to_string(o, e);
-    printf("%s", s);
+    my_printf("%s", s);
     my_free(s);
 }
 
@@ -799,7 +778,7 @@ typedef enum pattern_match_code {
 } pattern_match_code;
 
 object *object_list_append(object *list, object *o) {
-    assert(!list || list->type == T_PAIR);
+    /* assert(!list || list->type == T_PAIR); */
 
     object *ret_val = NIL;
     object *last_idx = NIL;
@@ -811,7 +790,7 @@ object *object_list_append(object *list, object *o) {
     if (last_idx == NIL) {
         ret_val = cons(o, NIL);
     } else {
-        assert(cdr(ref(last_idx)) == NIL);
+        /* assert(cdr(ref(last_idx)) == NIL); */
         setcdr(last_idx, cons(o, NIL));
         ret_val = ref(list);
     }
@@ -1047,7 +1026,7 @@ transform_tempalte_code
 transform_list_template(object **result, pattern_bind *pattern_binds,
                         object *template_list, size_t index,
                         bool is_ellipsis_ident, parse_data *data) {
-    assert(*result == NIL);
+    /* assert(*result == NIL); */
 
     transform_tempalte_code ret_val = TTC_OK;
 
@@ -1099,7 +1078,7 @@ transform_list_template(object **result, pattern_bind *pattern_binds,
                     ptr = cdr(ptr);
                 }
             } else {
-                assert(ret == NIL);
+                /* assert(ret == NIL); */
 
                 unref(idx);
                 unref(template);
@@ -1121,8 +1100,8 @@ transform_list_template(object **result, pattern_bind *pattern_binds,
 transform_tempalte_code
 transform_symbol_template(object **result, pattern_bind *pattern_binds,
                           object *template, size_t index, parse_data *data) {
-    assert(*result == NIL);
-    assert(template && template->type == T_SYMBOL);
+    /* assert(*result == NIL); */
+    /* assert(template && template->type == T_SYMBOL); */
 
     transform_tempalte_code code = TTC_OK;
     pattern_bind *entry = pattern_bind_get(pattern_binds, template->symbol);
@@ -1151,7 +1130,7 @@ transform_tempalte_code transform_template(object **result,
                                            object *template, size_t index,
                                            bool is_ellipsis_ident,
                                            parse_data *data) {
-    assert(*result == NIL);
+    /* assert(*result == NIL); */
 
     transform_tempalte_code ret_val = TTC_OK;
 
@@ -1248,9 +1227,9 @@ object *macro_proc_call(env *e, object *func, object *args, parse_data *data) {
     if (ttcode != TTC_OK) {
         ret_val = new_error("Exception: invalid syntax");
     } else {
-        printf("template value: ");
+        my_printf("template value: ");
         object_print(ref(ret_val), e);
-        printf("\n");
+        my_printf("\n");
 
         ret_val = eval(ret_val, e, data);
     }
@@ -1263,7 +1242,7 @@ object *macro_proc_call(env *e, object *func, object *args, parse_data *data) {
 
 object *proc_call(env *e, object *func, object *args, parse_data *data) {
     object *ret_val = NIL;
-    assert(func && func->type & (T_PROCEDURE | T_MACRO_PROC));
+    /* assert(func && func->type & (T_PROCEDURE | T_MACRO_PROC)); */
     switch (func->type) {
     case T_PRIMITIVE_PROC:
         ret_val = func->primitive_proc->proc(e, ref(args), data);
@@ -1352,7 +1331,67 @@ const char *type_name(object *o) {
     return object_type_name(o->type);
 }
 
+#define NUMBER_CPY(target, t_type, source, s_type)                             \
+    do {                                                                       \
+        t_type n = TO_TYPE((source)->real_part, s_type);                       \
+        TYPE_CPY((&(target)->real_part), &n);                                  \
+        n = TO_TYPE((source)->imaginary_part, s_type);                         \
+        TYPE_CPY((&(target)->imaginary_part), &n);                             \
+    } while (0)
+
+object *number_to_fix(object *o) {
+    number *num = o->number;
+    if (num->exactness == EXACTNESS_FIX) {
+        return ref(o);
+    }
+    number *new = NUMBER_ZERO(EXACTNESS_FIX);
+    // TODO: s64 and double use aliases
+    NUMBER_CPY(new, s64, num, double);
+    unref(o);
+    return new_number(new);
+}
+
+object *number_to_flo(object *o) {
+    number *num = o->number;
+    if (num->exactness == EXACTNESS_FLO) {
+        return ref(o);
+    }
+    number *new = NUMBER_ZERO(EXACTNESS_FLO);
+    NUMBER_CPY(new, double, num, s64);
+    unref(o);
+    return new_number(new);
+}
+
+#define NUMBER_TYPE_OP(op, n1, n2, type)                                       \
+    TO_TYPE((n1), type) op TO_TYPE((n2), type)
+
+void number_add(object *o1, object *o2) {
+    number *source = o2->number;
+    if (source->exactness == EXACTNESS_FLO) {
+        o1 = number_to_flo(o1);
+    }
+    number *target = o1->number;
+    if (target->exactness == EXACTNESS_FIX) {
+        s64 n = NUMBER_TYPE_OP(+, target->real_part, source->real_part, s64);
+        TYPE_CPY(&target->real_part, &n);
+        n = NUMBER_TYPE_OP(+, target->imaginary_part, source->imaginary_part,
+                           s64);
+        TYPE_CPY(&target->imaginary_part, &n);
+    } else if (target->exactness == EXACTNESS_FLO) {
+        double n = TO_TYPE(target->real_part, double) +
+                   TO_TYPE(source->real_part, double);
+        TYPE_CPY(&target->real_part, &n);
+        n = TO_TYPE(target->imaginary_part, double) +
+            TO_TYPE(source->imaginary_part, double);
+        TYPE_CPY(&target->imaginary_part, &n);
+    }
+}
+
 object *primitive_op(env *e, object *args, char op, parse_data *data) {
+    unref(args);
+    char *s = "not support";
+    return new_string(make_string(s, strlen(s)));
+
     object *ret_val = NIL;
     char op_s[] = {op, '\0'};
 
@@ -1364,7 +1403,8 @@ object *primitive_op(env *e, object *args, char op, parse_data *data) {
         goto ret;
     }
 
-    int value = first->number->real_part;
+    object *result = new_number(NUMBER_ZERO(EXACTNESS_FIX));
+    number_add(result, first);
     unref(first);
 
     int i = 1;
@@ -1392,19 +1432,19 @@ object *primitive_op(env *e, object *args, char op, parse_data *data) {
         unref(o);
         switch (op) {
         case '+':
-            value += eval_val;
+            /* value += eval_val; */
             break;
         case '-':
-            value -= eval_val;
+            /* value -= eval_val; */
             break;
         case '*':
-            value *= eval_val;
+            /* value *= eval_val; */
             break;
         case '/':
             if (eval_val == 0) {
                 return new_error("Division By Zero.");
             }
-            value /= eval_val;
+            /* value /= eval_val; */
             break;
         }
 
@@ -1640,7 +1680,7 @@ bool object_symbol_equal(object *sym, char *s) {
 
 object *make_if(object *test, object *consequent, object *alternate,
                 parse_data *data) {
-    assert(consequent);
+    /* assert(consequent); */
 
     object *ret_val;
     object *sym_if = new_symbol(lookup(data, "if"));

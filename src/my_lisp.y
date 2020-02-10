@@ -1,5 +1,5 @@
-%define parse.trace
-%define parse.error verbose
+/* %define parse.trace */
+/* %define parse.error verbose */
 
 %define api.pure full
 %locations
@@ -22,6 +22,7 @@
     symbol *symbol;
     object *obj;
     string *str;
+    u16 ch;
 }
 
 %token LP RP LSB RSB APOSTROPHE GRAVE COMMA COMMA_AT PERIOD
@@ -31,12 +32,12 @@
 %token <symbol> IDENTIFIER
 %token BOOLEAN_T BOOLEAN_F
 %token <num> NUMBER
-%token character
+%token <ch> CHARACTER
 %token <str> STRING
 
 %token END_OF_FILE
 
-%type <obj> number boolean symbol string list_item datum lexeme_datum compound_datum list abbreviation
+%type <obj> number boolean symbol string character list_item datum lexeme_datum compound_datum list abbreviation
 
 %start exp
 
@@ -53,7 +54,7 @@ lexeme_datum: boolean
 | number
 | symbol
 | string
-// | character
+| character
 ;
 
 string: STRING { $$ = new_string($1); }
@@ -65,6 +66,8 @@ number: NUMBER { $$ = new_number($1); }
 boolean: BOOLEAN_T  { $$ = new_boolean(true); }
 | BOOLEAN_F  { $$ = new_boolean(false); }
 ;
+
+character: CHARACTER { $$ = new_character($1); }
 
 symbol: IDENTIFIER { $$ = new_symbol($1); }
 ;

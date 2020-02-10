@@ -1,8 +1,9 @@
 #ifndef MY_LISP_H
 #define MY_LISP_H
 
-#include <assert.h>
 #include <my-os/types.h>
+
+#include "os.h"
 
 typedef enum {
     T_PRIMITIVE_PROC = 0x1,
@@ -14,9 +15,10 @@ typedef enum {
     T_STRING = 0x40,
     T_PAIR = 0x80,
     T_CHARACTER = 0x100,
-    T_ERR = 0x200,
-    T_NULL = 0x400,
-    T_MACRO_PROC = 0x800,
+    T_VECTOR = 0x200,
+    T_MACRO_PROC = 0x400,
+    T_NULL = 0x800,
+    T_ERR = 0x8000,
 } object_type;
 
 typedef struct object_t object;
@@ -81,10 +83,10 @@ struct macro_proc_t {
 typedef struct macro_proc_t macro_proc;
 
 enum radix {
-  RADIX_2 = 2,
-  RADIX_8 = 8,
-  RADIX_10 = 10,
-  RADIX_16 = 16,
+    RADIX_2 = 2,
+    RADIX_8 = 8,
+    RADIX_10 = 10,
+    RADIX_16 = 16,
 };
 enum exactness { EXACTNESS_FLO, EXACTNESS_FIX, EXACTNESS_UNKOWN };
 
@@ -104,7 +106,7 @@ struct object_t {
     union {
         number *number;
         bool bool_val;
-        char char_val;
+        u16 char_val;
         primitive_proc *primitive_proc;
         compound_proc *compound_proc;
         macro_proc *macro_proc;
@@ -128,6 +130,7 @@ string *make_string(char *, size_t);
 object *new_string(string *);
 number *make_number(enum exactness, u64, u64);
 object *new_number(number *);
+object *new_character(u16 ch);
 
 object *cons(object *car, object *cdr);
 object *car(object *pair);
@@ -145,13 +148,30 @@ void env_add_primitives(env *, parse_data *);
 object *eval(object *exp, env *env, parse_data *data);
 void object_print(object *o, env *);
 
-void *my_malloc(size_t size);
-
 void free_lisp(parse_data *data);
 
 void eof_handle(void);
 
 object *ref(object *o);
 object *unref(object *o);
+
+#define TYPE_CPY(target, source) memcpy(target, source, sizeof(*target))
+#define TO_TYPE(val, type) (*((type *)(&(val))))
+
+#ifdef MY_OS
+#define YY_INPUT(_buf, result, max_size)
+/* parse_data *p_data = (parse_data *)yyget_extra(yyscanner); \ */
+/* int c = p_data->buf[p_data->pos++];                                        \
+ */
+/* result = (c == 0) ? YY_NULL : (_buf[0] = c, 1) */
+
+void my_error(const char *);
+#define YY_FATAL_ERROR(msg) my_error(msg)
+
+/* typedef void FILE; */
+/* extern int errno; */
+/* extern FILE *stdin; */
+/* extern FILE *stdout; */
+#endif
 
 #endif /* MY_LISP_H */
