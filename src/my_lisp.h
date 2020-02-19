@@ -1,6 +1,8 @@
 #ifndef MY_LISP_H
 #define MY_LISP_H
 
+#define MY_DEBUG
+
 #include <my-os/types.h>
 
 #include "os.h"
@@ -81,22 +83,41 @@ struct macro_proc_t {
 };
 
 typedef struct macro_proc_t macro_proc;
-
-enum radix {
-    RADIX_2 = 2,
-    RADIX_8 = 8,
-    RADIX_10 = 10,
-    RADIX_16 = 16,
+enum exact_flag { EXACT = 1, INEXACT };
+enum radix_flag { RADIX_2, RADIX_8, RADIX_10, RADIX_16 };
+enum naninf_flag {
+    NAN_POSITIVE = 1 << 0,
+    INF_POSITIVE = 1 << 1,
+    NAN_NEGATIVE = 1 << 2,
+    INF_NEGATIVE = 1 << 3
 };
-enum exactness { EXACTNESS_FLO, EXACTNESS_FIX, EXACTNESS_UNKOWN };
 
-enum exactness to_exactness_flag(char c);
-enum radix to_radix_flag(char c);
+#define _REAL_BIT 0x1
+#define _IMAG_BIT 0x2
+#define _REAL_IMAG_BIT (_REAL_BIT | _IMAG_BIT)
+
+struct number_flag_t {
+    u64 complex : 1;
+    u64 flo : 1;   /* 1 flo 0 fix */
+    u64 exact : 2; /* 1 represent "uint"/"uint" */
+    u64 radix : 4;
+    u64 naninf : 8; /* low 4bit real high 4bit imag */
+    u64 size: 4;    /* value size */
+};
+
+void set_number_prefix(struct number_flag_t *number_flag, char c,
+                       enum exact_flag *flag);
+u64 _str_to_real(char *, enum radix_flag, bool);
+// handle str "uinteger* / uinteger*"
+void extract_uinteger(char *s, u64 uints[2], enum radix_flag flag);
+
+void _flo_to_exact(u64 value[2]);
+// is_exact is uint"/"uint
+void _exact_to_flo(u64 value[2], bool is_exact);
 
 struct number_t {
-    enum exactness exactness;
-    u64 real_part;
-    u64 imaginary_part;
+    struct number_flag_t flag;
+    u64 value[];
 };
 typedef struct number_t number;
 
@@ -128,7 +149,8 @@ object *new_symbol(symbol *s);
 
 string *make_string(char *, size_t);
 object *new_string(string *);
-number *make_number(enum exactness, u64, u64);
+
+number *make_number(struct number_flag_t flag, u64 value[4]);
 object *new_number(number *);
 object *new_character(u16 ch);
 
@@ -155,7 +177,10 @@ void eof_handle(void);
 object *ref(object *o);
 object *unref(object *o);
 
-#define TYPE_CPY(target, source) memcpy(target, source, sizeof(*target))
+#define TYPE_CPY(target, source)                                               \
+    assert(sizeof((target)) == sizeof((source)));                              \
+    memcpy(&(target), &(source), sizeof((target)))
+
 #define TO_TYPE(val, type) (*((type *)(&(val))))
 
 #ifdef MY_OS

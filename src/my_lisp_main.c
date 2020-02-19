@@ -57,9 +57,11 @@ int main(int argc, char *argv[]) {
     yy_switch_to_buffer(my_string_buffer, scanner);
 #else
     FILE *in;
-    if (argc == 2) {
-        in = fopen(argv[1], "r");
+    if (argc == 2 && (in = fopen(argv[1], "r")) != NULL) {
         yyset_in(in, scanner);
+    } else {
+        in = stdin;
+        yyset_in(stdin, scanner);
     }
 #endif // MY_OS
 

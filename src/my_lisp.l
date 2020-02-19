@@ -2,24 +2,32 @@
 %option noyywrap nodefault 8bit
 %option yylineno
 %option reentrant bison-bridge bison-locations
-%option never-interactive
-/* %option debug */
+/* %option never-interactive */
+%option debug
 %option header-file="my_lisp.lex.h"
 
 %{
 #include "my_lisp.tab.h"
 #include "my_lisp.h"
     void yyerror(YYLTYPE *yylloc, yyscan_t scanner, parse_data *data, const char *s, ...);
-    enum radix radix_flag = RADIX_10;
-    enum exactness exactness_flag = EXACTNESS_UNKOWN;
-    enum exactness exactness_derivation = EXACTNESS_FIX;
-    u64 real_part = 0;
-    u64 imaginary_part = 0;
-    u64 tmp_number = 0;
+    struct number_flag_t number_flag = {
+        .flo = 0,
+        .exact = 0,
+        .complex = 0,
+        .radix = 1 << RADIX_10,
+        .naninf = 0
+    };
+    /* enum exact_flag exact_flag = -1; */
+    enum radix_flag radix_flag = RADIX_10;
+    enum exact_flag exact_flag = 0;
+    u64 number_value[4] = {};
+    u64 *number_tmp = number_value;
     char imaginary_sign = '\0';
 
+    bool parse_real10_is_flo = false;
+#define CUR_NUMBER_PARSE_PART_BIT (number_value == number_tmp ? _REAL_BIT : _IMAG_BIT)
 %}
-     
+
 SPECIAL_INITIAL [!$%&*/:<=>?^_~]
 LETTER [a-zA-Z]
 INITIAL {SPECIAL_INITIAL}|{LETTER}
@@ -50,33 +58,32 @@ DIGIT_ALL [0-9aAbBcCdDeEfF]
 
 NAN "nan.0"
 INF "inf.0"
-NANINF ({NAN}|{INF})
-REAL_NANINF {SIGN}{NANINF}
 
 UINTEGER {DIGIT_ALL}+
 UREAL {UINTEGER}
 _UREAL {UINTEGER}"/"{UINTEGER}
-REAL ({SIGN}{UREAL})
-_REAL ({SIGN}{_UREAL})
+REAL ({SIGN}?{UREAL})
+_REAL ({SIGN}?{_UREAL})
 
 UINTEGER10 {DIGIT10}+
 UREAL10 {UINTEGER10}
 _UREAL10 {UINTEGER10}"/"{UINTEGER10}
 _UREAL10_FLO (({DIGIT10}+"."{DIGIT10}*)|("."{DIGIT10}+))
-REAL10 ({SIGN}{UREAL10})
-_REAL10 ({SIGN}{_UREAL10})
-_REAL10_FLO ({SIGN}{_UREAL10_FLO})
+REAL10 ({SIGN}?{UREAL10})
+_REAL10 ({SIGN}?{_UREAL10})
+_REAL10_FLO ({SIGN}?{_UREAL10_FLO})
 
 SIGN [-+]
 
-%x string character
-%x prefix suffix mantissa_width
-%x radix radix10
-%x real real10 ureal ureal10 unaninf naninf
-%x complex
+%x x_string x_character
+%x x_prefix x_suffix x_mantissa_width x_real10_end
+%x x_radix x_radix10
+%x x_real x_real10 x_naninf
+%x x_complex
 
-%%    
+%%
 %{
+  // TODO: support variable length
   #define MAX_STR_CONST 4096
   char string_buf[MAX_STR_CONST];
   char *string_buf_ptr;
@@ -107,8 +114,8 @@ SIGN [-+]
 "..." |
 "->"{SUBSEQUENT}* { yylval->symbol = lookup(yyextra, yytext); return IDENTIFIER; }
 
-\" { string_buf_ptr = string_buf; BEGIN(string); }
-<string>{
+\" { string_buf_ptr = string_buf; BEGIN(x_string); }
+<x_string>{
 \\a { *string_buf_ptr++ = '\n'; }
 \\b { *string_buf_ptr++ = '\b'; }
 \\t { *string_buf_ptr++ = '\t'; }
@@ -128,147 +135,184 @@ SIGN [-+]
 }
 }
 
-<INITIAL,prefix>{
-{RADIX}{EXACTNESS}? {
+<INITIAL,x_prefix>{
+({RADIX}{EXACTNESS}?)|({EXACTNESS}{RADIX}?) {
+    if (yyleng > 0) {
+        set_number_prefix(&number_flag, yytext[1], &exact_flag);
+    }
     if (yyleng > 2) {
-        exactness_flag = to_exactness_flag(yytext[3]);
+        set_number_prefix(&number_flag, yytext[3], &exact_flag);
     }
 
-    radix_flag = to_radix_flag(yytext[1]);
-
+    int radix = number_flag.radix;
+    radix_flag = ilog2(radix);
     if (radix_flag == RADIX_10) {
-        BEGIN(real10);
+        BEGIN(x_real10);
     } else {
-        BEGIN(real);
-    }
-  }
-
-{EXACTNESS}{RADIX}? {
-    if (yyleng > 2) {
-        radix_flag = to_radix_flag(yytext[3]);
-    }
-    exactness_flag = to_exactness_flag(yytext[1]);
-    if (radix_flag == RADIX_10) {
-        BEGIN(real10);
-    } else {
-        BEGIN(real);
+        BEGIN(x_real);
     }
   }
 }
 
-<INITIAL,naninf>{
-{REAL_NANINF} {
-    BEGIN(complex);
+<INITIAL,x_naninf,x_real10,x_real>{
+"+"{NAN} {
+    if (number_value == number_tmp) {
+        number_flag.naninf = NAN_POSITIVE;
+    } else {
+        number_flag.naninf |= NAN_POSITIVE << 4;
+    }
+    BEGIN(x_complex);
+}
+
+"-"{NAN} {
+    if (number_value == number_tmp) {
+        number_flag.naninf = NAN_NEGATIVE;
+    } else {
+        number_flag.naninf |= NAN_NEGATIVE << 4;
+    }
+    BEGIN(x_complex);
+}
+"+"{INF} {
+    if (number_value == number_tmp) {
+        number_flag.naninf = INF_POSITIVE;
+    } else {
+        number_flag.naninf |= INF_POSITIVE << 4;
+    }
+    BEGIN(x_complex);
+}
+"-"{INF} {
+    if (number_value == number_tmp) {
+        number_flag.naninf = INF_NEGATIVE;
+    } else {
+        number_flag.naninf |= INF_NEGATIVE << 4;
+    }
+    BEGIN(x_complex);
 }
 }
 
-<INITIAL,ureal10,real10>{
-{UREAL10} {
-    s64 n = atoll(yytext);
-    TYPE_CPY(&tmp_number, &n);
-    BEGIN(suffix);
-}
-{_UREAL10_FLO} {
-    double n = atof(yytext);
-    TYPE_CPY(&tmp_number, &n);
-    exactness_derivation = EXACTNESS_FLO;
-    BEGIN(suffix);
-}
-{_UREAL10} {
-   BEGIN(complex);
-}
-}
-
-<INITIAL,real10>{
+<INITIAL,x_real10>{
 {REAL10} {
-    s64 n = atoll(yytext);
-    TYPE_CPY(&tmp_number, &n);    
-    BEGIN(suffix);
+    number_tmp[0] = _str_to_real(yytext, RADIX_10, false);
+    BEGIN(x_suffix);
 }
 
 {_REAL10_FLO} {
-    double n = atof(yytext);
-    TYPE_CPY(&tmp_number, &n);    
-    exactness_derivation = EXACTNESS_FLO;
-    BEGIN(suffix);
+    number_tmp[0] = _str_to_real(yytext, RADIX_10, true);
+    parse_real10_is_flo = true;
+    BEGIN(x_suffix);
 }
 
 {_REAL10} {
-    BEGIN(complex);
-}
-}
-
-<suffix>{
-{EXPONENT_MARK}{SIGN}?{DIGIT10}+ {
-    s64 exp = atoll(yytext+1);
-    exp = (s64)pow(10, exp);
-    if (exactness_derivation == EXACTNESS_FIX) {
-        s64 n = (*(s64 *)&tmp_number) * exp;
-        TYPE_CPY(&tmp_number, &n);
-    } else if (exactness_derivation == EXACTNESS_FLO) {
-        double n = (*(double*)&tmp_number) * exp;
-        TYPE_CPY(&tmp_number, &n);
+    extract_uinteger(yytext, number_tmp, RADIX_10);
+    if (number_flag.flo) {
+        _exact_to_flo(number_tmp, true);
+    } else {
+        number_flag.exact = number_tmp == number_value ? _REAL_BIT : _IMAG_BIT;
     }
-    BEGIN(mantissa_width);
+
+    BEGIN(x_complex);
+}
+}
+
+<x_suffix>{
+{EXPONENT_MARK}{SIGN}?{DIGIT10}+ {
+    u64 num = _str_to_real(yytext+1, RADIX_10, false);
+    s64 exp = TO_TYPE(num, s64);
+    exp = (s64)pow(10, exp);
+
+    if (!parse_real10_is_flo) {
+        s64 n = TO_TYPE(number_tmp[0], s64) * exp;
+        TYPE_CPY(number_tmp[0], n);
+    } else {
+        double n = TO_TYPE(number_tmp[0], double) * exp;
+        TYPE_CPY(number_tmp[0], n);
+    }
+    BEGIN(x_mantissa_width);
 }
 
 .|\n {
-    yyless(yyleng - 1); BEGIN(mantissa_width);
+    yyless(yyleng - 1); BEGIN(x_mantissa_width);
 }
 }
 
-<mantissa_width>{
+<x_mantissa_width>{
 "|"{DIGIT10}+ {
-    BEGIN(complex);
+    BEGIN(x_real10_end);
 }
 .|\n {
-    yyless(yyleng-1); BEGIN(complex);
+    yyless(yyleng-1); BEGIN(x_real10_end);
 }
 }
 
+<x_real10_end>{
+.|\n {
+    u8 part_bit = number_value == number_tmp ? _REAL_BIT : _IMAG_BIT;
+    if (parse_real10_is_flo) {
+        if (exact_flag == EXACT) {
+            _flo_to_exact(number_tmp);
+        } else {
+            if (part_bit & _IMAG_BIT && !number_flag.flo) {
+                if (number_flag.exact & _REAL_BIT) {
+                    number_flag.exact = 0;
+                    _exact_to_flo(number_value, true);
+                } else {
+                    _exact_to_flo(number_value, false);
+                }
+            }
+            number_flag.flo = true;
+        }
+        parse_real10_is_flo = false;
+    } else {
+        if (number_flag.flo) {
+            _exact_to_flo(number_tmp, false);
+        }
+    }
+    yyless(yyleng-1);
+    BEGIN(x_complex);
+}
+}
 
-<ureal,real>{
-{UREAL} {
-    s64 n = strtoll(yytext, 0, radix_flag);
-    TYPE_CPY(&tmp_number, &n);
-    BEGIN(complex);
-}
-    
-{_UREAL} {
-    BEGIN(complex);
-}
-}
-
-<real>{
+<x_real>{
 {REAL} {
-    s64 n = strtoll(yytext, 0, radix_flag);
-    TYPE_CPY(&tmp_number, &n);
-    BEGIN(complex);
+    assert(radix_flag != RADIX_10);
+    number_tmp[0] = _str_to_real(yytext, radix_flag, false);
+    if (number_flag.flo) {
+        _exact_to_flo(number_tmp, false);
+    }
+    BEGIN(x_complex);
 }
 
 {_REAL} {
-    BEGIN(complex);
+    assert(radix_flag != RADIX_10);
+    extract_uinteger(yytext, number_tmp, radix_flag);
+    if (number_flag.flo) {
+        _exact_to_flo(number_tmp, true);
+    } else {
+        number_flag.exact = number_tmp == number_value ? _REAL_BIT : _IMAG_BIT;
+    }
+    BEGIN(x_complex);
 }
 }
 
-<INITIAL,complex>{
-"+"{NANINF}"i" {
-    BEGIN(INITIAL);
-}
-"-"{NANINF}"i" {
-    BEGIN(INITIAL);
-}
-"+i" {
+<INITIAL,x_real,x_real10>{
+{SIGN}"i" {
     s64 n = 1;
-    TYPE_CPY(&imaginary_part, &n);
-}
-"-i" {
-    s64 n = -1;
-    TYPE_CPY(&imaginary_part, &n);
+    if (yytext[0] == '-') {
+        n = -1;
+    }
+    if (number_tmp == number_value) {
+        number_tmp = number_value + 2;
+    }
+    TYPE_CPY(number_tmp[0], n);
+    if (number_flag.flo) {
+        _exact_to_flo(number_tmp, false);
+    }
+    yyless(yyleng - 1);
+    BEGIN(x_complex);
 }
 }
 
-<complex>{
+<x_complex>{
 "@" {
     if (imaginary_sign != '\0') {
         yyless(yyleng - 1);
@@ -276,9 +320,9 @@ SIGN [-+]
     }
 
     if (radix_flag == RADIX_10) {
-        BEGIN(real10);
+        BEGIN(x_real10);
     } else {
-        BEGIN(real);
+        BEGIN(x_real);
     }
 }
 "+"|"-" {
@@ -287,67 +331,51 @@ SIGN [-+]
         BEGIN(INITIAL);
     }
     imaginary_sign = yytext[0];
-    TYPE_CPY(&real_part, &tmp_number);
+
+    number_tmp = number_value + 2;
+    yyless(yyleng-1);
     if (radix_flag == RADIX_10) {
-        BEGIN(ureal10);
+        BEGIN(x_real10);
     } else {
-        BEGIN(ureal);
+        BEGIN(x_real);
     }
+
 }
 
 "i" {
-    double n;
-    if (imaginary_sign == '-') {
-        if (exactness_derivation == EXACTNESS_FLO) {
-            double n = -TO_TYPE(tmp_number, double);
-            TYPE_CPY(&imaginary_part, &n);
-        } else if (exactness_derivation == EXACTNESS_FIX){
-            s64 n = -TO_TYPE(tmp_number, s64);
-            TYPE_CPY(&imaginary_part, &n);
-        }
-    } else {
-        TYPE_CPY(&imaginary_part, &tmp_number);
+    number_flag.complex = 1;
+    if (imaginary_sign == '\0') {
+        // [+-]\d*i
+        memcpy(number_value + 2, number_value, sizeof(u64) * 2);
+        memset(number_value, 0, sizeof(u64) * 2);
     }
 }
-  
+
 .|\n {
+    if (imaginary_sign != '\0' && !number_flag.complex) {
+        yyerror(yylloc, yyscanner, yyextra, "pasre error");
+        assert(!number_flag.complex);
+    }
     yyless(yyleng - 1);
     BEGIN(INITIAL);
-    
-    if (imaginary_sign == '\0') {
-        TYPE_CPY(&real_part, &tmp_number);
-    }
-    if (exactness_flag == EXACTNESS_FLO &&
-        exactness_derivation == EXACTNESS_FIX) {
-        double n = (double)TO_TYPE(real_part, s64);
-        TYPE_CPY(&real_part, &n);
-        n = (double)TO_TYPE(imaginary_part, s64);
-        TYPE_CPY(&imaginary_part, &n);
-        exactness_derivation = EXACTNESS_FLO;
-    } else if (exactness_flag == EXACTNESS_FIX &&
-               exactness_derivation == EXACTNESS_FLO){
-        s64 n = (s64)TO_TYPE(real_part, double);
-        TYPE_CPY(&real_part, &n);
-        n = (s64)TO_TYPE(imaginary_part, double);
-        TYPE_CPY(&imaginary_part, &n);
-        exactness_derivation = EXACTNESS_FIX;
-    }
-    
-    yylval->num = make_number(exactness_derivation, real_part, imaginary_part);
-    
+
+    yylval->num = make_number(number_flag, number_value);
+
+    bzero(&number_flag, sizeof(struct number_flag_t));
+    number_flag.radix = 1 << RADIX_10;
+    number_flag.exact = 0;
     radix_flag = RADIX_10;
-    exactness_flag = EXACTNESS_UNKOWN;
-    exactness_derivation = EXACTNESS_FIX;
-    real_part = 0;
-    imaginary_part = 0;
-    tmp_number = 0;
+    exact_flag = 0;
+    bzero(number_value, sizeof(u64) * 4);
+    number_tmp = number_value;
     imaginary_sign = '\0';
     return NUMBER;
 }
 }
 
-"#\\" { BEGIN(character); }
-<character>{
+
+"#\\" { BEGIN(x_character); }
+<x_character>{
 "nul" {
     BEGIN(INITIAL);
     yylval->ch = '\v';

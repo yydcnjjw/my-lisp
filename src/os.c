@@ -4,22 +4,24 @@
 #include <stdlib.h>
 #include <string.h>
 
-void my_printf(const char *fmt, ...) {
+int my_printf(const char *fmt, ...) {
     va_list args;
     va_start(args, fmt);
-    vprintf(fmt, args);
+    int ret =vprintf(fmt, args);
     va_end(args);
+    return ret;
 }
 
-void my_sprintf(char *buf, const char *fmt, ...) {
+int my_vsprintf(char *buf, const char *fmt, va_list va) {
+    return vsprintf(buf, fmt, va);
+}
+
+int my_sprintf(char *buf, const char *fmt, ...) {
     va_list args;
     va_start(args, fmt);
-    vsprintf(buf, fmt, args);
+    int ret = my_vsprintf(buf, fmt, args);
     va_end(args);
-}
-
-void my_vsprintf(char *buf, const char *fmt, va_list va) {
-    vsprintf(buf, fmt, va);
+    return ret;
 }
 
 void *my_malloc(size_t size) {
