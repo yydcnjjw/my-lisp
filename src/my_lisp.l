@@ -3,7 +3,7 @@
 %option yylineno
 %option reentrant bison-bridge bison-locations
 /* %option never-interactive */
-%option debug
+/* %option debug */
 %option header-file="my_lisp.lex.h"
 
 %{

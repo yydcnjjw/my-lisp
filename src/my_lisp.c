@@ -1802,9 +1802,9 @@ object *assert_fun_args_count(char *fun, object *args, int count) {
     }
 }
 
-object *assert_fun_args_count_range(char *fun, object *args, int min, int max) {
+object *assert_fun_args_count_min(char *fun, object *args, int min) {
     int size = object_list_len(args);
-    if (min <= size && size <= max) {
+    if (min > size) {
         return new_error("Exception: incorrect argument count in call %s", fun);
     } else {
         return NIL;
@@ -1836,39 +1836,51 @@ object *primitive_is_number(env *e, object *args, parse_data *data) {
     return primitive_is_type(e, args, "number?", T_NUMBER, data);
 }
 
-enum number_type {
-    NUMBER_COMPLEX,
-    NUMBER_REAL,
-    NUMBER_RATIONAL,
-    NUMBER_INTEGER
-};
+object *primitive_is_complex(env *e, object *args, parse_data *data) {
+    return primitive_is_number(e, args, data);
+}
 
-/* enum number_type get_number_type(object *o_num) { */
-/*     number *number = o_num->number; */
-/*     if (number->imaginary_part != 0) { */
-/*         return NUMBER_COMPLEX; */
-/*     } */
-/*     // if (number.) */
-/* } */
+typedef bool number_pred(number *);
 
-/* object *primitive_is_number_type(env *e, object *args, parse_data *data, */
-/*                                  enum number_type type) { */
-/*     object *ret = primitive_is_number(e, ref(args), data); */
-/*     if (ret == &False) { */
-/*         return ret; */
-/*     } */
-/*     unref(ret); */
+object *primitive_is_number_pred(env *e, object *args, parse_data *data,
+                                 number_pred pred) {
+    object *ret = primitive_is_number(e, ref(args), data);
+    if (ret == &False) {
+        return ret;
+    }
+    unref(ret);
 
-/*     if (get_number_type(car(args)) == type) { */
-/*         return ref(&True); */
-/*     } else { */
-/*         return ref(&True); */
-/*     } */
-/* } */
+    object *o = eval(car(args), e, data);
+    number *number = o->number;
 
-/* object *primitive_is_complex(env *e, object *args, parse_data *data) { */
-/*     return primitive_is_number_type(e, args, data, NUMBER_COMPLEX); */
-/* } */
+    if (pred(number)) {
+        ret = ref(&True);
+    } else {
+        ret = ref(&False);
+    }
+
+    unref(o);
+    return ret;
+}
+
+bool number_pred_real(number *n) { return !n->flag.complex; }
+
+object *primitive_is_real(env *e, object *args, parse_data *data) {
+    return primitive_is_number_pred(e, args, data, number_pred_real);
+}
+
+bool number_pred_rational(number *n) {
+    return !n->flag.complex && n->flag.exact & 0x0f;
+}
+
+object *primitive_is_rational(env *e, object *args, parse_data *data) {
+    return primitive_is_number_pred(e, args, data, number_pred_rational);
+}
+
+bool number_pred_integer(number *n) { return !n->flag.naninf; }
+object *primitive_is_integer(env *e, object *args, parse_data *data) {
+    return primitive_is_number_pred(e, args, data, number_pred_integer);
+}
 
 object *primitive_is_string(env *e, object *args, parse_data *data) {
     return primitive_is_type(e, args, "string?", T_STRING, data);
@@ -2217,6 +2229,167 @@ ret:
     return ret_val;
 }
 
+typedef bool object_eq_pred(object *o1, object *o2);
+
+object *primitive_object_eq(env *e, object *args, parse_data *data,
+                            char *func_name, object_eq_pred pred,
+                            object_type type) {
+    ERROR(assert_fun_args_count_min(func_name, ref(args), 2)) {
+        unref(args);
+        return error;
+    }
+
+    object *ret_val;
+    object *operand;
+
+    object *o_ref = NIL;
+
+    int i = 0;
+    for_each_object_list_entry(operand, args) {
+        object *o = eval(ref(operand), e, data);
+
+        ERROR(ref(o)) {
+            ret_val = error;
+            goto loop_exit;
+        }
+
+        ERROR(assert_fun_arg_type(func_name, ref(o), i, type)) {
+            ret_val = error;
+            goto loop_exit;
+        }
+
+        if (!o_ref) {
+            o_ref = ref(o);
+        } else {
+            if (!pred(ref(o_ref), ref(o))) {
+                ret_val = ref(&False);
+                goto loop_exit;
+            }
+        }
+
+        unref(o);
+        i++;
+        continue;
+
+    loop_exit:
+        unref(idx);
+        unref(operand);
+        unref(o);
+        goto ret;
+    }
+
+    ret_val = ref(&True);
+
+ret:
+    unref(args);
+    unref(o_ref);
+    return ret_val;
+}
+
+// boolean=?
+bool boolean_eq_pred(object *o1, object *o2) {
+    bool ret = o1 == o2;
+    unref(o1);
+    unref(o2);
+    return ret;
+}
+
+object *primitive_boolean_eq(env *e, object *args, parse_data *data) {
+    return primitive_object_eq(e, args, data, "boolean=?", boolean_eq_pred,
+                               T_BOOLEAN);
+}
+
+// symbol=?
+bool symbol_eq_pred(object *o1, object *o2) {
+    bool ret = o1->symbol == o2->symbol;
+    unref(o1);
+    unref(o2);
+    return ret;
+}
+
+object *primitive_symbol_eq(env *e, object *args, parse_data *data) {
+    return primitive_object_eq(e, args, data, "symbol=?", symbol_eq_pred,
+                               T_SYMBOL);
+}
+
+bool _number_eq(number *n1, number *n2) {
+    enum naninf_flag n1_real_naninf_flag = n1->flag.naninf & 0x0f;
+    enum naninf_flag n2_real_naninf_flag = n2->flag.naninf & 0x0f;
+    if ((n1_real_naninf_flag == NAN_POSITIVE ||
+         n1_real_naninf_flag == NAN_NEGATIVE) &&
+        (n2_real_naninf_flag == NAN_POSITIVE ||
+         n2_real_naninf_flag == NAN_NEGATIVE)) {
+        return true;
+    }
+
+    if (n1->flag.size != n2->flag.size) {
+        return false;
+    }
+
+    size_t mem_size = sizeof(number) + sizeof(u64) * n1->flag.size;
+    return !memcmp(n1, n2, mem_size);
+}
+
+// number=?
+bool number_eq_pred(object *o1, object *o2) {
+    bool ret = _number_eq(o1->number, o2->number);
+    unref(o1);
+    unref(o2);
+    return ret;
+}
+
+object *primitive_eqv(env *e, object *args, parse_data *data) {
+    ERROR(assert_fun_args_count("eqv?", ref(args), 2)) {
+        unref(args);
+        return error;
+    }
+
+    object *o1 = eval(car(ref(args)), e, data);
+    object *o2 = eval(car(cdr(ref(args))), e, data);
+
+    object *ret = NIL;
+    bool result = false;
+    if (o1->type != o2->type) {
+        ret = ref(&False);
+        goto ret;
+    }
+
+    switch (o1->type) {
+    case T_BOOLEAN:
+        ret = primitive_boolean_eq(e, ref(args), data);
+        break;
+    case T_SYMBOL:
+        ret = primitive_symbol_eq(e, ref(args), data);
+        break;
+    case T_NUMBER:
+        result = number_eq_pred(ref(o1), ref(o2));
+        break;
+    case T_CHARACTER:
+
+        break;
+    case T_NULL:
+        result = o1 == o2;
+        break;
+    default:
+        result = o1 == o2;
+        break;
+    }
+
+    if (ret == NIL) {
+        if (result) {
+            ret = ref(&True);
+        } else {
+            ret = ref(&False);
+        }
+    }
+
+ret:
+    unref(args);
+    unref(o1);
+    unref(o2);
+    return ret;
+}
+
 void env_add_primitives(env *env, parse_data *parse_data) {
     env_add_primitive(parse_data, env, "boolean?", primitive_is_boolean);
     env_add_primitive(parse_data, env, "number?", primitive_is_number);
@@ -2226,9 +2399,18 @@ void env_add_primitives(env *env, parse_data *parse_data) {
     env_add_primitive(parse_data, env, "null?", primitive_is_null);
     env_add_primitive(parse_data, env, "symbol?", primitive_is_symbol);
 
+    env_add_primitive(parse_data, env, "complex?", primitive_is_complex);
+    env_add_primitive(parse_data, env, "real?", primitive_is_real);
+    env_add_primitive(parse_data, env, "rational?", primitive_is_rational);
+    env_add_primitive(parse_data, env, "integer?", primitive_is_integer);
+
+    env_add_primitive(parse_data, env, "boolean=?", primitive_boolean_eq);
+    env_add_primitive(parse_data, env, "symbol=?", primitive_symbol_eq);
+    env_add_primitive(parse_data, env, "eqv?", primitive_eqv);
+    
     // todo
-    env_add_primitive(parse_data, env, "char?", primitive_is_boolean);
-    env_add_primitive(parse_data, env, "vector?", primitive_is_boolean);
+    /* env_add_primitive(parse_data, env, "char?", primitive_is_boolean); */
+    /* env_add_primitive(parse_data, env, "vector?", primitive_is_boolean); */
 
     env_add_primitive(parse_data, env, "error?", primitive_is_error);
 
