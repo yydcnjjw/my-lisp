@@ -566,6 +566,22 @@ void env_put(env *e, symbol *sym, object *obj) {
     e->count++;
 }
 
+object *env_set(env *e, symbol *sym, object *obj) {
+    for (int i = 0; i < e->count; i++) {
+        if (e->symbols[i] == sym) {
+            unref(e->objects[i]);
+            e->objects[i] = obj;
+            return NIL;
+        }
+    }
+    if (e->parent) {
+        return env_set(e, sym, obj);
+    } else {
+        unref(obj);
+        return new_error("Exception: variable %s is not bound", sym->name);
+    }
+}
+
 void free_object(object *o) {
     if (!o) {
         return;
@@ -2389,6 +2405,33 @@ ret:
     unref(o2);
     return ret;
 }
+// set!
+object *primitive_set(env *e, object *args, parse_data *data) {
+    ERROR(assert_fun_args_count("set!", ref(args), 2)) {
+        unref(args);
+        return error;
+    }
+
+    object *variable = car(ref(args));
+
+    ERROR(assert_fun_arg_type("set!", ref(variable), 0, T_SYMBOL)) {
+        unref(variable);
+        unref(args);
+        return error;
+    }
+
+    object *expression = eval(car(cdr(args)), e, data);
+
+    ERROR(ref(expression)) {
+        unref(variable);
+        unref(expression);
+        return error;
+    }
+
+    object *ret = env_set(e, variable->symbol, expression);
+    unref(variable);
+    return ret;
+}
 
 void env_add_primitives(env *env, parse_data *parse_data) {
     env_add_primitive(parse_data, env, "boolean?", primitive_is_boolean);
@@ -2407,7 +2450,7 @@ void env_add_primitives(env *env, parse_data *parse_data) {
     env_add_primitive(parse_data, env, "boolean=?", primitive_boolean_eq);
     env_add_primitive(parse_data, env, "symbol=?", primitive_symbol_eq);
     env_add_primitive(parse_data, env, "eqv?", primitive_eqv);
-    
+
     // todo
     /* env_add_primitive(parse_data, env, "char?", primitive_is_boolean); */
     /* env_add_primitive(parse_data, env, "vector?", primitive_is_boolean); */
@@ -2434,6 +2477,8 @@ void env_add_primitives(env *env, parse_data *parse_data) {
     env_add_primitive(parse_data, env, "cond", primitive_cond);
 
     env_add_primitive(parse_data, env, "let", primitive_let);
+
+    env_add_primitive(parse_data, env, "set!", primitive_set);
 
     env_add_primitive(parse_data, env, "define-syntax",
                       primitive_define_syntax);
