@@ -1,3 +1,0 @@
-# Hashes of file build rules.
-29d9c7dcde681e2b2f47fdd3468d8cbe src/my_lisp.lex.c
-aa9c101ec07eebc45785b2d76b864e97 src/my_lisp.tab.c
