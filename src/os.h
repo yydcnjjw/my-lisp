@@ -1,20 +1,38 @@
 #pragma once
 
-#include <stdarg.h>
-#include <my-os/types.h>
 #include <my-os/log2.h>
+#include <my-os/types.h>
+#include <stdarg.h>
+
+/* #define MY_OS */
 
 #ifdef MY_OS
 #include <my-os/string.h>
-#else
-#include <string.h>
-#include <math.h>
-#include <stdlib.h>
-#include <assert.h>
+#include "strtox.h"
 
-#if !defined (MY_DEBUG)
+static inline long long int my_strtoll(char *s, int base) {
+    long long v;
+    kstrtoll(s, base, &v);
+    return v;
+}
+
+#define my_strtod(s) kstrtod(s)
+
 #undef assert
 #define assert(expr)
+
+#else
+#include <assert.h>
+#include <math.h>
+#include <stdlib.h>
+#include <string.h>
+
+#define my_strtod(s) strtod(s, NULL)
+#define my_strtoll(s, base) strtoll(s, NULL, base)
+
+#if !defined(MY_DEBUG)
+#undef assert
+#define assert(expr) assert(expr)
 #endif // MY_DEBUG
 
 #endif

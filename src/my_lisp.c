@@ -1,35 +1,10 @@
 #include "my_lisp.h"
-#include <my_lisp.tab.h>
 
 #include <stdarg.h>
 
+#include "my_lisp.lex.h"
 #include <my-os/list.h>
-
-static inline object *object_list_entry(object *list) {
-    return list->type == T_PAIR ? car(list) : list;
-}
-
-static inline bool object_list_has_next(object *list) {
-    bool ret_val = list;
-    unref(list);
-    return ret_val;
-}
-
-static inline object *object_list_next(object *idx) {
-    return idx->type == T_PAIR ? cdr(idx) : (unref(idx), NULL);
-}
-
-#define for_each_object_list_entry(o, list)                                    \
-    for (object *idx = ref(list);                                              \
-         !object_list_has_next(ref(idx))                                       \
-             ? false                                                           \
-             : (o = object_list_entry(ref(idx)), true);                        \
-         unref(o), idx = object_list_next(idx))
-
-#define for_each_object_list(list)                                             \
-    for (object *idx = ref(list);                                              \
-         idx && (idx->type == T_PAIR ? true : (unref(idx), false));            \
-         idx = cdr(idx))
+#include <number.h>
 
 static object True = {.type = T_BOOLEAN, .bool_val = true, .ref_count = 1};
 static object False = {.type = T_BOOLEAN, .bool_val = false, .ref_count = 1};
@@ -39,22 +14,7 @@ object *new_error(const char *fmt, ...);
 char *to_string(object *o, ...);
 void free_object(object *o);
 const char *object_type_name(object_type type);
-object *assert_fun_arg_type(char *func, object *o, int i, object_type type);
 bool object_symbol_equal(object *sym, char *s);
-
-static inline object *is_error(object *o) {
-    bool ret = o && o->type == T_ERR;
-    if (ret) {
-        return o;
-    } else {
-        unref(o);
-        return NIL;
-    }
-}
-
-#define ERROR(e) for (object *error = is_error(e); error; error = NIL)
-
-#define ASSERT(cond, fmt, ...) (!(cond) ? new_error(fmt, ##__VA_ARGS__) : NIL)
 
 object *assert_fun_arg_type(char *func, object *o, int i, object_type type) {
     if (!o || !(o->type & type)) {
@@ -94,43 +54,6 @@ static inline object *new_object(object_type type) {
 }
 
 object *new_boolean(bool val) { return val ? ref(&True) : ref(&False); }
-
-number *make_number(struct number_flag_t flag, u64 value[4]) {
-    int value_len = 1;
-    if (flag.naninf & 0x0f) {
-        value_len--;
-    }
-    if (flag.complex) {
-        value_len++;
-        if (flag.naninf & 0xf0) {
-            value_len--;
-        }
-    }
-
-    value_len += (flag.exact + 1) / 2;
-
-    size_t value_size = value_len * sizeof(u64);
-    number *number = my_malloc(sizeof(struct number_t) + value_size);
-    number->flag = flag;
-    number->flag.size = value_len;
-
-    u64 *value_p = number->value;
-    if (!(flag.naninf & 0x0f)) {
-        *value_p++ = value[0];
-        if (flag.exact == _REAL_BIT) {
-            *value_p++ = value[1];
-        }
-    }
-
-    if (!(flag.naninf & 0xf0) && flag.complex) {
-        *value_p++ = value[2];
-        if (flag.exact == _IMAG_BIT) {
-            *value_p = value[3];
-        }
-    }
-
-    return number;
-}
 
 object *new_number(number *number) {
     object *o = new_object(T_NUMBER);
@@ -196,61 +119,48 @@ void set_number_prefix(struct number_flag_t *number_flag, char c,
         number_flag->radix = to_radix_flag(c);
     }
 }
-// value[0] is double
-void _flo_to_exact(u64 value[2]) {
-    s64 n = TO_TYPE(value[0], double);
-    TYPE_CPY(value[0], n);
-}
-
-void _exact_to_flo(u64 value[2], bool is_exact) {
-    if (is_exact) {
-        s64 n1 = TO_TYPE(value[0], s64);
-        s64 n2 = TO_TYPE(value[1], s64);
-        double n = (double)n1 / (double)n2;
-        bzero(value, sizeof(u64) * 2);
-        TYPE_CPY(value[0], n);
-    } else {
-        double n = TO_TYPE(value[0], s64);
-        TYPE_CPY(value[0], n);
-    }
-}
 
 u8 radix_value(enum radix_flag flag) {
+    u8 v = 10;
     switch (flag) {
     case RADIX_2:
-        return 2;
+        v = 2;
+        break;
     case RADIX_8:
-        return 8;
+        v = 8;
+        break;
     case RADIX_10:
-        return 10;
+        v = 10;
+        break;
     case RADIX_16:
-        return 16;
+        v = 16;
+        break;
     }
+    return v;
 }
 
-u64 _str_to_real(char *s, enum radix_flag radix_flag, bool is_flo) {
-    u64 ret;
+void _str_to_real(number_value_t value[2], char *s, enum radix_flag radix_flag,
+                  bool is_flo) {
     if (is_flo) {
         assert(radix_flag == RADIX_10);
-        double num = strtod(s, NULL);
-        TYPE_CPY(ret, num);
+        value[0].flo_v = my_strtod(s);
+        size_t len = strlen(s);
+        char *point = strchr(s, '.');
+        int i = point - s;
+        value[1].u64_v = len - i - 1;
     } else {
-        s64 num = strtoll(s, NULL, radix_value(radix_flag));
-        TYPE_CPY(ret, num);
+        value[0].s64_v = my_strtoll(s, radix_value(radix_flag));
     }
-    return ret;
 }
 
 // handle str "uinteger* / uinteger*"
-void extract_uinteger(char *s, u64 uints[2], enum radix_flag flag) {
+void extract_uinteger(char *s, number_value_t value[2], enum radix_flag flag) {
     char *second = strchr(s, '/') + 1;
     int len = second - s;
     char *first = my_malloc(len);
     memcpy(first, s, len - 1);
-    s64 num = strtoll(first, NULL, radix_value(flag));
-    TYPE_CPY(uints[0], num);
-    num = strtoll(second, NULL, radix_value(flag));
-    TYPE_CPY(uints[1], num);
+    value[0].s64_v = my_strtoll(first, radix_value(flag));
+    value[1].s64_v = my_strtoll(second, radix_value(flag));
     my_free(first);
 }
 
@@ -619,11 +529,11 @@ void free_object(object *o) {
 }
 
 char *list_to_string(object *list) {
-    int len = 3; /* default "()" total 3 with memory */
+    size_t len = 3; /* default "()" total 3 with memory */
     char *list_str = my_malloc(len);
 
     strcat(list_str, "(");
-    object *o;
+    object *o = NIL;
     for_each_object_list_entry(o, list) {
         char *s = to_string(ref(o));
         int inc_len = 0;
@@ -670,16 +580,18 @@ int _format_naninf(char *buf, enum naninf_flag flag) {
     return ret;
 }
 
-int _format_number(char *buf, u64 *value, bool is_flo, bool is_exact_fix) {
+int _format_number(char *buf, const number_value_t *value, bool is_flo,
+                   bool is_exact_fix) {
     int ret = 0;
     if (is_exact_fix) {
-        ret = my_sprintf(buf, "%+Li/%Li", TO_TYPE(value[0], s64),
-                         TO_TYPE(value[1], s64));
+        ret = my_sprintf(buf, "%+Li/%Li", value[0].s64_v, value[1].s64_v);
     } else {
         if (is_flo) {
-            ret = my_sprintf(buf, "%+f", TO_TYPE(value[0], double));
+            char fmt_buf[30] = {0};
+            my_sprintf(fmt_buf, "%%+.%df", value[1].u64_v);
+            ret = my_sprintf(buf, fmt_buf, value[0].flo_v);
         } else {
-            ret = my_sprintf(buf, "%+Li", TO_TYPE(value[0], s64));
+            ret = my_sprintf(buf, "%+Li", value[0].s64_v);
         }
     }
     return ret;
@@ -693,7 +605,7 @@ char *number_to_string(object *o) {
 
     struct number_flag_t flag = number->flag;
 
-    u64 *value = number->value;
+    number_value_t *value = number->value;
     bool is_flo = flag.flo;
     bool is_exact = flag.exact & _REAL_BIT;
     enum naninf_flag naninf_flag = flag.naninf & 0x0f;
@@ -705,7 +617,7 @@ char *number_to_string(object *o) {
     }
 
     if (!(flag.naninf & 0xf0)) {
-        if (is_exact) {
+        if (is_exact || is_flo) {
             value += 2;
         } else {
             value += 1;
@@ -737,10 +649,8 @@ char *to_string(object *o, ...) {
         unref(o);
         return my_strdup("()");
     }
-#define BUF_SIZE 4096
-    char buf[BUF_SIZE] = {'\0'};
 
-    int len = 1;
+    size_t len = 1;
     char *fmt = "%s";
     char *o_str = NULL;
 
@@ -816,7 +726,7 @@ size_t object_list_len(object *list) {
         return 0;
 
     size_t i = 0;
-    object *o;
+    object *o = NIL;
     for_each_object_list_entry(o, list) { i++; }
     unref(list);
     return i;
@@ -866,7 +776,7 @@ object *compound_proc_call(env *e, object *func, object *args,
             continue;
         }
 
-        object *eval_val = eval(ref(given), e, data);
+        object *eval_val = eval_from_ast(ref(given), e, data);
         ERROR(ref(eval_val)) {
             unref(idx);
             unref(given);
@@ -898,7 +808,7 @@ object *compound_proc_call(env *e, object *func, object *args,
         goto ret;
     }
 
-    ret_val = eval(ref(func->compound_proc->body), func_env, data);
+    ret_val = eval_from_ast(ref(func->compound_proc->body), func_env, data);
 
 ret:
     unref(func);
@@ -988,7 +898,7 @@ pattern_match_code match_ident_pattern(pattern_bind *pattern_binds,
 
     // TODO: to object list contain function
 
-    object *literal;
+    object *literal = NIL;
     for_each_object_list_entry(literal, literals) {
         if (literal && literal->symbol == pattern->symbol) {
             if (!(expr && expr->type == T_SYMBOL &&
@@ -1040,7 +950,7 @@ pattern_match_code match_list_pattern(pattern_bind *pattern_binds,
 
     symbol *ellipsis = lookup(data, "...");
 
-    object *pattern;
+    object *pattern = NIL;
     object *expr_idx = expr;
     for_each_object_list_entry(pattern, pattern_list) {
         object *next_idx = object_list_next(ref(idx));
@@ -1048,8 +958,8 @@ pattern_match_code match_list_pattern(pattern_bind *pattern_binds,
             object_symbol_eq(object_list_entry(object_list_next(ref(idx))),
                              ellipsis)) {
 
-            int num =
-                object_list_len(ref(expr_idx)) - object_list_len(ref(idx)) + 2;
+            int num = (int)(object_list_len(ref(expr_idx)) -
+                            object_list_len(ref(idx)) + 2);
             if (num == 0) {
                 collect_pattern(ref(pattern), pattern_binds);
             }
@@ -1153,17 +1063,17 @@ pattern_match_code match_srpattern(pattern_bind **pattern_binds,
 object *object_list_entry_ref(object *list, size_t index) {
     object *ret_val = NIL;
     int i = -1;
-    object *o;
+    object *o = NIL;
     for_each_object_list_entry(o, list) {
         i++;
-        if (i == index) {
+        if (i == (int)index) {
             ret_val = o;
             unref(idx);
             break;
         }
     }
 
-    if (i != index) {
+    if (i != (int)index) {
         ret_val = new_error("list len = %d < index = %d", i, index);
     }
 
@@ -1192,7 +1102,7 @@ transform_list_template(object **result, pattern_bind *pattern_binds,
     transform_tempalte_code ret_val = TTC_OK;
 
     symbol *ellipsis = lookup(data, "...");
-    object *template;
+    object *template = NIL;
 
     object *ptr = NIL;
     for_each_object_list_entry(template, template_list) {
@@ -1258,9 +1168,10 @@ transform_list_template(object **result, pattern_bind *pattern_binds,
     return ret_val;
 }
 
-transform_tempalte_code
-transform_symbol_template(object **result, pattern_bind *pattern_binds,
-                          object *template, size_t index, parse_data *data) {
+transform_tempalte_code transform_symbol_template(object **result,
+                                                  pattern_bind *pattern_binds,
+                                                  object *template,
+                                                  size_t index) {
     assert(*result == NIL);
     assert(template && template->type == T_SYMBOL);
 
@@ -1320,7 +1231,7 @@ transform_tempalte_code transform_template(object **result,
             break;
         case T_SYMBOL:
             ret_val = transform_symbol_template(result, pattern_binds,
-                                                ref(template), index, data);
+                                                ref(template), index);
             break;
         case T_STRING:
         case T_NUMBER:
@@ -1341,7 +1252,7 @@ object *macro_proc_call(env *e, object *func, object *args, parse_data *data) {
 
     object *ret_val = NIL;
     transform_tempalte_code ttcode = TTC_SYNTAX_ERR;
-    object *syntax_rule;
+    object *syntax_rule = NIL;
     for_each_object_list_entry(syntax_rule, proc->syntax_rules) {
         object *srpattern = car(ref(syntax_rule));
 
@@ -1350,7 +1261,6 @@ object *macro_proc_call(env *e, object *func, object *args, parse_data *data) {
             &pattern_binds, ref(proc->literals), srpattern, ref(args), data);
 
         if (ret == MATCH) {
-            pattern_bind *entry;
             object *template = car(cdr(ref(syntax_rule)));
 
             ttcode = transform_template(&ret_val, pattern_binds, template, 0,
@@ -1365,11 +1275,11 @@ object *macro_proc_call(env *e, object *func, object *args, parse_data *data) {
     if (ttcode != TTC_OK) {
         ret_val = new_error("Exception: invalid syntax");
     } else {
-        my_printf("template value: ");
-        object_print(ref(ret_val), e);
-        my_printf("\n");
+        /* my_printf("template value: "); */
+        /* object_print(ref(ret_val), e); */
+        /* my_printf("\n"); */
 
-        ret_val = eval(ret_val, e, data);
+        ret_val = eval_from_ast(ret_val, e, data);
     }
 
     unref(args);
@@ -1396,14 +1306,13 @@ object *proc_call(env *e, object *func, object *args, parse_data *data) {
         break;
     }
 
-ret:
     unref(func);
     unref(args);
     return ret_val;
 }
 
 object *eval_list(object *expr, env *env, parse_data *data) {
-    object *operator= eval(car(ref(expr)), env, data);
+    object *operator= eval_from_ast(car(ref(expr)), env, data);
 
     if (operator&& !(operator->type &(T_PROCEDURE | T_MACRO_PROC))) {
         char *s = to_string(operator);
@@ -1418,7 +1327,7 @@ object *eval_list(object *expr, env *env, parse_data *data) {
     return proc_call(env, operator, operands, data);
 }
 
-object *eval(object *exp, env *env, parse_data *data) {
+object *eval_from_ast(object *exp, env *env, parse_data *data) {
     object *ret_val = NIL;
 
     if (!exp) {
@@ -1469,281 +1378,6 @@ const char *type_name(object *o) {
     return object_type_name(o->type);
 }
 
-s64 gcd(s64 a, s64 b) {
-    if (b)
-        while ((a %= b) && (b %= a))
-            ;
-    return a + b;
-}
-
-void format_exact(u64 value[2]) {
-    s64 *result = (s64 *)value;
-    if (!result[1] && result[0]) {
-        result[1] = 1;
-    }
-}
-
-void unformat_exact(u64 value[2]) {
-    s64 *result = (s64 *)value;
-    if (result[1] == 1 && result[0]) {
-        result[1] = 0;
-    }
-}
-
-// example: 3 => 3/1
-void __number_add(u64 result[2], u64 var1[2], u64 var2[2], bool is_flo) {
-    if (!is_flo) {
-        format_exact(var1);
-        format_exact(var2);
-        s64 *i_var1 = (s64 *)var1;
-        s64 *i_var2 = (s64 *)var2;
-        s64 *i_result = (s64 *)result;
-        my_printf("%Li  %Li : %Li %Li\n", i_var1[0], i_var1[1], i_var2[0],
-                  i_var2[1]);
-        if (!i_var1[0]) {
-            memcpy(result, var2, sizeof(u64) * 2);
-            unformat_exact(result);
-            return;
-        }
-
-        if (!i_var2[0]) {
-            memcpy(result, var1, sizeof(u64) * 2);
-            unformat_exact(result);
-            return;
-        }
-
-        i_result[0] = i_var1[1] * i_var2[0] + i_var2[1] * i_var1[0];
-        i_result[1] = i_var1[1] * i_var2[1];
-        my_printf("%Li / %Li\n", i_result[0], i_result[1]);
-        assert(i_result[0] && i_result[1]);
-        s64 ret_gcd = gcd(i_result[0], i_result[1]);
-        if (ret_gcd != 1) {
-            i_result[0] /= ret_gcd;
-            i_result[1] /= ret_gcd;
-        }
-        unformat_exact(result);
-    } else {
-        double f_var1 = TO_TYPE(var1, double);
-        double f_var2 = TO_TYPE(var2, double);
-        double f_result = f_var1 + f_var2;
-        TYPE_CPY(*result, f_result);
-    }
-}
-
-number *cpy_number(number *source) {
-    size_t value_size = source->flag.size * sizeof(u64);
-    size_t size = sizeof(number) + value_size;
-    number *result = my_malloc(size);
-    memcpy(result, source, size);
-    return result;
-}
-
-//
-enum naninf_flag __number_add_naninf(enum naninf_flag var1,
-                                     enum naninf_flag var2) {
-
-    if (!var1 && var2) {
-        return var2;
-    }
-    if (!var2 && var1) {
-        return var1;
-    }
-    return NAN_POSITIVE;
-}
-
-void _cpy_to_unzip_number(u64 target[2], u64 *source, bool is_flo,
-                          bool is_exact, bool is_naninf) {
-    if (is_naninf) {
-        bzero(target, sizeof(u64) * 2);
-    } else {
-        if (is_flo) {
-            target[0] = source[0];
-        } else if (is_exact) {
-            assert(source[1]);
-            memcpy(target, source, sizeof(u64) * 2);
-        } else {
-            target[0] = source[0];
-        }
-    }
-}
-
-void unzip_number_value(u64 result[4], number *source) {
-    bzero(result, sizeof(u64) * 4);
-
-    struct number_flag_t flag = source->flag;
-    u64 *value = source->value;
-
-    bool is_flo = flag.flo;
-    bool is_exact = flag.exact & _REAL_BIT;
-    enum naninf_flag naninf_flag = flag.naninf & 0x0f;
-
-    _cpy_to_unzip_number(result, value, is_flo, is_exact, naninf_flag);
-
-    if (!flag.complex) {
-        return;
-    }
-
-    naninf_flag = flag.naninf >> 4;
-    if (!naninf_flag) {
-        if (is_exact) {
-            value += 2;
-        } else {
-            value += 1;
-        }
-    }
-    is_exact = flag.exact & _IMAG_BIT;
-    _cpy_to_unzip_number(result + 2, value, is_flo, is_exact, naninf_flag);
-}
-
-void unzip_number_to_flo(u64 result[4], u64 source[4]) {
-    if (result != source) {
-        memcpy(result, source, sizeof(u64) * 4);
-    }
-
-    _exact_to_flo(result, true);
-    _exact_to_flo(result + 2, true);
-}
-
-number *_number_add(number *op1, number *op2) {
-    struct number_flag_t op1_flag = op1->flag;
-    struct number_flag_t op2_flag = op2->flag;
-
-    bool is_flo = op1_flag.flo || op2_flag.flo;
-
-    u64 op1_uzip[4] = {};
-    unzip_number_value(op1_uzip, op1);
-
-    if (!op1_flag.flo && is_flo) {
-        unzip_number_to_flo(op1_uzip, op1_uzip);
-    }
-
-    u64 op2_uzip[4] = {};
-    unzip_number_value(op2_uzip, op2);
-
-    if (!op2_flag.flo && is_flo) {
-        unzip_number_to_flo(op2_uzip, op2_uzip);
-    }
-
-    u64 result_value[4] = {};
-
-    bool real_is_naninf = op1_flag.naninf & 0x0f || op2_flag.naninf & 0x0f;
-    enum naninf_flag real_naninf = 0;
-    if (!real_is_naninf) {
-        __number_add(result_value, op1_uzip, op2_uzip, is_flo);
-    } else {
-        real_naninf =
-            __number_add_naninf(op1_flag.naninf & 0x0f, op2_flag.naninf & 0x0f);
-    }
-
-    bool is_complex = op1_flag.complex || op2_flag.complex;
-    enum naninf_flag imag_naninf = 0;
-    if (is_complex) {
-        bool imag_is_naninf = op1_flag.naninf >> 4 || op2_flag.naninf >> 4;
-        if (!imag_is_naninf) {
-            __number_add(result_value + 2, op1_uzip + 2, op2_uzip + 2, is_flo);
-        } else {
-            imag_naninf =
-                __number_add_naninf(op1_flag.naninf >> 4, op2_flag.naninf >> 4);
-        }
-    }
-
-    struct number_flag_t result_flag = {};
-    result_flag.flo = is_flo;
-    result_flag.radix =
-        op1_flag.radix != op2_flag.radix ? RADIX_10 : op1_flag.radix;
-    result_flag.complex = op1_flag.complex || op2_flag.complex;
-    result_flag.naninf = real_naninf | imag_naninf;
-
-    if (!is_flo) {
-        result_flag.exact |= result_value[1] == 1 ? _REAL_BIT : 0;
-        result_flag.exact |= result_value[3] == 1 ? _IMAG_BIT : 0;
-    }
-    number *result = make_number(result_flag, result_value);
-    return result;
-}
-
-object *primitive_op(env *e, object *args, char op, parse_data *data) {
-    /* unref(args); */
-    /* return NOT_SUPPORT(); */
-
-    object *ret_val = NIL;
-    char op_s[] = {op, '\0'};
-
-    number *result = NULL;
-
-    int i = 1;
-    object *operand;
-
-    for_each_object_list_entry(operand, args) {
-        object *o = eval(ref(operand), e, data);
-        ERROR(ref(o)) {
-            ret_val = error;
-            goto loop_exit;
-        }
-
-        ERROR(assert_fun_arg_type(op_s, ref(o), i, T_NUMBER)) {
-            ret_val = error;
-            goto loop_exit;
-        }
-
-        if (!result) {
-            result = cpy_number(o->number);
-        } else {
-            number *op1 = result;
-            number *op2 = o->number;
-            switch (op) {
-            case '+':
-                result = _number_add(op1, op2);
-                break;
-            case '-':
-                result = _number_add(op1, op2);
-                break;
-            case '*':
-                result = _number_add(op1, op2);
-                break;
-            case '/':
-                result = _number_add(op1, op2);
-                /* if (eval_val == 0) { */
-                /*     return new_error("Division By Zero."); */
-                /* } */
-                break;
-            }
-            my_free(op1);
-        }
-        unref(o);
-        i++;
-        continue;
-
-    loop_exit:
-        unref(idx);
-        unref(operand);
-        unref(o);
-        goto ret;
-    }
-
-    ret_val = new_number(result);
-
-ret:
-    unref(args);
-    return ret_val;
-}
-
-object *primitive_add(env *e, object *a, parse_data *data) {
-    return primitive_op(e, a, '+', data);
-}
-
-object *primitive_sub(env *e, object *a, parse_data *data) {
-    return primitive_op(e, a, '-', data);
-}
-
-object *primitive_mul(env *e, object *a, parse_data *data) {
-    return primitive_op(e, a, '*', data);
-}
-
-object *primitive_div(env *e, object *a, parse_data *data) {
-    return primitive_op(e, a, '/', data);
-}
-
 object *primitive_define(env *e, object *args, parse_data *data) {
     object *ret_val = NIL;
 
@@ -1753,7 +1387,7 @@ object *primitive_define(env *e, object *args, parse_data *data) {
         value = cdr(ref(args));
         if (value != NIL) {
             unref(value);
-            value = eval(car(cdr(ref(args))), e, data);
+            value = eval_from_ast(car(cdr(ref(args))), e, data);
         } else {
             unref(value);
             value = NIL;
@@ -1811,7 +1445,7 @@ object *is_type(object *o, object_type type) {
 }
 
 object *assert_fun_args_count(char *fun, object *args, int count) {
-    if (object_list_len(args) != count) {
+    if (object_list_len(args) != (size_t)count) {
         return new_error("Exception: incorrect argument count in call %s", fun);
     } else {
         return NIL;
@@ -1833,7 +1467,7 @@ object *primitive_is_type(env *e, object *args, char *func, object_type type,
         unref(args);
         return error;
     }
-    return is_type(eval(car(args), e, data), type);
+    return is_type(eval_from_ast(car(args), e, data), type);
 }
 
 object *primitive_is_boolean(env *e, object *args, parse_data *data) {
@@ -1866,7 +1500,7 @@ object *primitive_is_number_pred(env *e, object *args, parse_data *data,
     }
     unref(ret);
 
-    object *o = eval(car(args), e, data);
+    object *o = eval_from_ast(car(args), e, data);
     number *number = o->number;
 
     if (pred(number)) {
@@ -1917,7 +1551,7 @@ object *primitive_is_error(env *e, object *args, parse_data *data) {
     }
 
     object *ret_val = NIL;
-    object *param = eval(car(args), e, data);
+    object *param = eval_from_ast(car(args), e, data);
     if (param && param->type == T_ERR) {
         ret_val = ref(&True);
     } else {
@@ -1949,7 +1583,7 @@ object *primitive_if(env *e, object *args, parse_data *data) {
         goto ret;
     }
 
-    object *test = eval(car(ref(args)), e, data);
+    object *test = eval_from_ast(car(ref(args)), e, data);
     object *consequent = car(cdr(ref(args)));
     object *alternate = arg_len == 3 ? car(cdr(cdr(ref(args)))) : NIL;
 
@@ -1963,11 +1597,11 @@ object *primitive_if(env *e, object *args, parse_data *data) {
     if (test != &False) {
         // true
         unref(alternate);
-        ret_val = eval(consequent, e, data);
+        ret_val = eval_from_ast(consequent, e, data);
     } else {
         // false
         unref(consequent);
-        ret_val = alternate ? eval(alternate, e, data) : NIL;
+        ret_val = alternate ? eval_from_ast(alternate, e, data) : NIL;
     }
     unref(test);
 
@@ -2016,7 +1650,7 @@ object *primitive_cond(env *e, object *args, parse_data *data) {
 
     object *test = NIL;
     object *consequent = NIL;
-    object *ptr;
+    object *ptr = NIL;
 
     object *cond_to_if = NIL;
 
@@ -2078,7 +1712,7 @@ object *primitive_cond(env *e, object *args, parse_data *data) {
         }
     }
 
-    ret_val = eval(ref(cond_to_if), e, data);
+    ret_val = eval_from_ast(ref(cond_to_if), e, data);
 
 ret:
     unref(cond_to_if);
@@ -2094,7 +1728,7 @@ object *primitive_begin(env *e, object *args, parse_data *data) {
     object *form = NIL;
     for_each_object_list_entry(form, args) {
         unref(ret_val);
-        ret_val = eval(ref(form), e, data);
+        ret_val = eval_from_ast(ref(form), e, data);
     }
     unref(args);
     return ret_val;
@@ -2105,7 +1739,7 @@ object *primitive_car(env *e, object *args, parse_data *data) {
         unref(args);
         return error;
     }
-    return car(eval(car(args), e, data));
+    return car(eval_from_ast(car(args), e, data));
 }
 
 object *primitive_cdr(env *e, object *args, parse_data *data) {
@@ -2113,7 +1747,7 @@ object *primitive_cdr(env *e, object *args, parse_data *data) {
         unref(args);
         return error;
     }
-    return cdr(eval(car(args), e, data));
+    return cdr(eval_from_ast(car(args), e, data));
 }
 
 object *primitive_cons(env *e, object *args, parse_data *data) {
@@ -2121,7 +1755,8 @@ object *primitive_cons(env *e, object *args, parse_data *data) {
         unref(args);
         return error;
     }
-    return cons(eval(car(ref(args)), e, data), eval(car(cdr(args)), e, data));
+    return cons(eval_from_ast(car(ref(args)), e, data),
+                eval_from_ast(car(cdr(args)), e, data));
 }
 
 object *primitive_lambda(env *e, object *args, parse_data *data) {
@@ -2148,7 +1783,7 @@ object *primitive_syntax_rules(env *e, object *args, parse_data *data) {
     symbol *underscore = lookup(data, "...");
 
     object *literals = car(ref(args));
-    object *literal;
+    object *literal = NIL;
     for_each_object_list_entry(literal, literals) {
         // error check
         ERROR(ASSERT(literal && literal->type == T_SYMBOL &&
@@ -2182,15 +1817,15 @@ object *primitive_let(env *e, object *args, parse_data *data) {
     object *ret_val = NIL;
 
     object *bindings = car(ref(args));
+    env *let_env = new_env();
+
     ERROR(ASSERT(!bindings || bindings->type == T_PAIR, "invalid syntax let")) {
         unref(bindings);
         ret_val = error;
         goto ret;
     }
 
-    env *let_env = new_env();
-
-    object *binding;
+    object *binding = NIL;
     for_each_object_list_entry(binding, bindings) {
         ERROR(
             ASSERT(object_list_len(ref(binding)) == 2, "invalid syntax let")) {
@@ -2212,7 +1847,7 @@ object *primitive_let(env *e, object *args, parse_data *data) {
             goto loop_err_ret2;
         }
         object *init = car(cdr(ref(binding)));
-        object *val = eval(init, e, data);
+        object *val = eval_from_ast(init, e, data);
         ERROR(ref(val)) {
             unref(val);
             ret_val = error;
@@ -2255,14 +1890,14 @@ object *primitive_object_eq(env *e, object *args, parse_data *data,
         return error;
     }
 
-    object *ret_val;
-    object *operand;
+    object *ret_val = NIL;
+    object *operand = NIL;
 
     object *o_ref = NIL;
 
     int i = 0;
     for_each_object_list_entry(operand, args) {
-        object *o = eval(ref(operand), e, data);
+        object *o = eval_from_ast(ref(operand), e, data);
 
         ERROR(ref(o)) {
             ret_val = error;
@@ -2360,8 +1995,8 @@ object *primitive_eqv(env *e, object *args, parse_data *data) {
         return error;
     }
 
-    object *o1 = eval(car(ref(args)), e, data);
-    object *o2 = eval(car(cdr(ref(args))), e, data);
+    object *o1 = eval_from_ast(car(ref(args)), e, data);
+    object *o2 = eval_from_ast(car(cdr(ref(args))), e, data);
 
     object *ret = NIL;
     bool result = false;
@@ -2420,7 +2055,7 @@ object *primitive_set(env *e, object *args, parse_data *data) {
         return error;
     }
 
-    object *expression = eval(car(cdr(args)), e, data);
+    object *expression = eval_from_ast(car(cdr(args)), e, data);
 
     ERROR(ref(expression)) {
         unref(variable);
@@ -2494,11 +2129,91 @@ void free_symbol(symbol *sym) {
     }
 }
 
-void free_lisp(parse_data *data) {
-    symbol **symtab = data->symtab;
-    symbol *sym;
+parse_data *make_parse_data() {
+    parse_data *data = my_malloc(sizeof(parse_data));
+    if (!data) {
+        my_printf("init parse data failure\n");
+    }
+
+    data->ast = NULL;
+    data->symtab = my_malloc(NHASH * sizeof(symbol *));
+
+    data->is_eof = false;
+    return data;
+}
+
+void free_parse_data(parse_data **data) {
+    if (*data == NULL) {
+        return;
+    }
+
+    symbol **symtab = (*data)->symtab;
     for (int i = 0; i < NHASH; ++i) {
         free_symbol(symtab[i]);
     }
     my_free(symtab);
+    free(*data);
+    *data = NULL;
+}
+
+struct lisp_ctx *make_lisp_ctx(struct lisp_ctx_opt opt) {
+    struct lisp_ctx *ctx = my_malloc(sizeof(struct lisp_ctx));
+    ctx->parse_data = make_parse_data();
+    if (yylex_init_extra(ctx->parse_data, &ctx->scanner)) {
+        free_parse_data(&ctx->parse_data);
+        return NULL;
+    }
+    ctx->global_env = new_env();
+    env_add_primitives(ctx->global_env, ctx->parse_data);
+
+#ifdef MY_DEBUG
+    yyset_debug(1, ctx->scanner);
+#endif // MY_DEBUG
+    return ctx;
+}
+
+void free_lisp_ctx(struct lisp_ctx **ctx) {
+    if (*ctx == NULL) {
+        return;
+    }
+    yylex_destroy((*ctx)->scanner);
+    free_env((*ctx)->global_env);
+    free_parse_data(&(*ctx)->parse_data);
+    my_free(*ctx);
+    *ctx = NULL;
+}
+
+#if !defined(MY_OS)
+int eval_from_io(struct lisp_ctx *ctx, FILE *fi) {
+    yyset_in(fi, ctx->scanner);
+    while (!my_lisp_is_eof(ctx)) {
+        yyparse(ctx->scanner, ctx->parse_data);
+        object *value = eval_from_ast(ctx->parse_data->ast, ctx->global_env,
+                                      ctx->parse_data);
+        ctx->parse_data->ast = NULL;
+        object_print(value, ctx->global_env);
+        my_printf("\n");
+    }
+    fclose(fi);
+    return 0;
+}
+
+bool my_lisp_is_eof(struct lisp_ctx *ctx) { return ctx->parse_data->is_eof; }
+
+#endif // !defined (MY_OS)
+
+object *eval_from_str(struct lisp_ctx *ctx, char *code) {
+    int len = strlen(code);
+    char *buf = my_malloc(len + 1);
+    memcpy(buf, code, len);
+    YY_BUFFER_STATE str_buffer = yy_scan_string(buf, ctx->scanner);
+    yy_switch_to_buffer(str_buffer, ctx->scanner);
+    yyparse(ctx->scanner, ctx->parse_data);
+    yy_delete_buffer(str_buffer, ctx->scanner);
+    my_free(buf);
+
+    object *ret =
+        eval_from_ast(ctx->parse_data->ast, ctx->global_env, ctx->parse_data);
+    ctx->parse_data->ast = NULL;
+    return ret;
 }

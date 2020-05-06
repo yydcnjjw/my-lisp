@@ -2,7 +2,8 @@ find_package(BISON)
 find_package(FLEX)
 
 
-set(CMAKE_C_FLAGS "-fno-builtin -fno-stack-protector -mcmodel=large -m64")
+set(CMAKE_C_FLAGS "-fno-builtin -fno-stack-protector -mcmodel=large -m64 -Wall -Wextra")
+set(CMAKE_CXX_FLAGS "-fno-builtin -fno-stack-protector -mcmodel=large -m64 -Wall -Wextra")
 # set(CMAKE_EXE_LINKER_FLAGS "-nostdlib -Wl,-gc-sections")
 # set(CMAKE_EXE_LINKER_FLAGS "-nostdlib")
 
@@ -20,6 +21,9 @@ add_executable(my-lisp
   my_lisp_main.c
   my_lisp.c
   os.c
+  number.c
+  strtod.c
+  strtox.c
   ${FLEX_MyScanner_OUTPUTS}  
   ${BISON_MyParser_OUTPUTS}
   )

@@ -43,7 +43,7 @@
 
 %%
 exp: datum { data->ast = $1; YYACCEPT; }
-| END_OF_FILE { eof_handle(); YYACCEPT; }
+| END_OF_FILE { data->is_eof = true; YYACCEPT; }
 ;
 
 datum: lexeme_datum

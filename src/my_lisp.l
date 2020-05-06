@@ -7,7 +7,6 @@
 %option header-file="my_lisp.lex.h"
 
 %{
-#include "my_lisp.tab.h"
 #include "my_lisp.h"
     void yyerror(YYLTYPE *yylloc, yyscan_t scanner, parse_data *data, const char *s, ...);
     struct number_flag_t number_flag = {
@@ -20,8 +19,8 @@
     /* enum exact_flag exact_flag = -1; */
     enum radix_flag radix_flag = RADIX_10;
     enum exact_flag exact_flag = 0;
-    u64 number_value[4] = {};
-    u64 *number_tmp = number_value;
+    number_value_t number_value[4] = {};
+    number_value_t *number_tmp = number_value;
     char imaginary_sign = '\0';
 
     bool parse_real10_is_flo = false;
@@ -192,12 +191,12 @@ SIGN [-+]
 
 <INITIAL,x_real10>{
 {REAL10} {
-    number_tmp[0] = _str_to_real(yytext, RADIX_10, false);
+    _str_to_real(number_tmp, yytext, RADIX_10, false);
     BEGIN(x_suffix);
 }
 
 {_REAL10_FLO} {
-    number_tmp[0] = _str_to_real(yytext, RADIX_10, true);
+    _str_to_real(number_tmp, yytext, RADIX_10, true);
     parse_real10_is_flo = true;
     BEGIN(x_suffix);
 }
@@ -207,7 +206,7 @@ SIGN [-+]
     if (number_flag.flo) {
         _exact_to_flo(number_tmp, true);
     } else {
-        number_flag.exact = number_tmp == number_value ? _REAL_BIT : _IMAG_BIT;
+        number_flag.exact = CUR_NUMBER_PARSE_PART_BIT;
     }
 
     BEGIN(x_complex);
@@ -216,16 +215,14 @@ SIGN [-+]
 
 <x_suffix>{
 {EXPONENT_MARK}{SIGN}?{DIGIT10}+ {
-    u64 num = _str_to_real(yytext+1, RADIX_10, false);
-    s64 exp = TO_TYPE(num, s64);
-    exp = (s64)pow(10, exp);
+    number_value_t num[2];
+    _str_to_real(num, yytext+1, RADIX_10, false);
+    s64 exp = (s64)pow(10, num[0].s64_v);
 
     if (!parse_real10_is_flo) {
-        s64 n = TO_TYPE(number_tmp[0], s64) * exp;
-        TYPE_CPY(number_tmp[0], n);
+        number_tmp[0].s64_v *= exp;
     } else {
-        double n = TO_TYPE(number_tmp[0], double) * exp;
-        TYPE_CPY(number_tmp[0], n);
+        number_tmp[0].flo_v *= exp;
     }
     BEGIN(x_mantissa_width);
 }
@@ -240,16 +237,18 @@ SIGN [-+]
     BEGIN(x_real10_end);
 }
 .|\n {
-    yyless(yyleng-1); BEGIN(x_real10_end);
+    yyless(yyleng-1);
+    BEGIN(x_real10_end);
 }
 }
 
 <x_real10_end>{
 .|\n {
-    u8 part_bit = number_value == number_tmp ? _REAL_BIT : _IMAG_BIT;
+    u8 part_bit = CUR_NUMBER_PARSE_PART_BIT;
     if (parse_real10_is_flo) {
         if (exact_flag == EXACT) {
             _flo_to_exact(number_tmp);
+            number_flag.exact = CUR_NUMBER_PARSE_PART_BIT;
         } else {
             if (part_bit & _IMAG_BIT && !number_flag.flo) {
                 if (number_flag.exact & _REAL_BIT) {
@@ -275,7 +274,7 @@ SIGN [-+]
 <x_real>{
 {REAL} {
     assert(radix_flag != RADIX_10);
-    number_tmp[0] = _str_to_real(yytext, radix_flag, false);
+    _str_to_real(number_tmp, yytext, radix_flag, false);
     if (number_flag.flo) {
         _exact_to_flo(number_tmp, false);
     }
@@ -288,7 +287,7 @@ SIGN [-+]
     if (number_flag.flo) {
         _exact_to_flo(number_tmp, true);
     } else {
-        number_flag.exact = number_tmp == number_value ? _REAL_BIT : _IMAG_BIT;
+        number_flag.exact = CUR_NUMBER_PARSE_PART_BIT;
     }
     BEGIN(x_complex);
 }
@@ -303,7 +302,7 @@ SIGN [-+]
     if (number_tmp == number_value) {
         number_tmp = number_value + 2;
     }
-    TYPE_CPY(number_tmp[0], n);
+    number_tmp[0].s64_v = n;
     if (number_flag.flo) {
         _exact_to_flo(number_tmp, false);
     }
@@ -361,6 +360,7 @@ SIGN [-+]
 
     yylval->num = make_number(number_flag, number_value);
 
+    // reset number parse status
     bzero(&number_flag, sizeof(struct number_flag_t));
     number_flag.radix = 1 << RADIX_10;
     number_flag.exact = 0;

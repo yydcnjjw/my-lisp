@@ -102,23 +102,31 @@ struct number_flag_t {
     u64 exact : 2; /* 1 represent "uint"/"uint" */
     u64 radix : 4;
     u64 naninf : 8; /* low 4bit real high 4bit imag */
-    u64 size: 4;    /* value size */
+    u64 size : 4;   /* value size */
 };
 
 void set_number_prefix(struct number_flag_t *number_flag, char c,
                        enum exact_flag *flag);
-u64 _str_to_real(char *, enum radix_flag, bool);
-// handle str "uinteger* / uinteger*"
-void extract_uinteger(char *s, u64 uints[2], enum radix_flag flag);
 
-void _flo_to_exact(u64 value[2]);
+typedef union number_value_t {
+    u64 u64_v;
+    double flo_v;
+    s64 s64_v;
+} number_value_t;
+
+void _str_to_real(number_value_t value[2], char *, enum radix_flag, bool);
+// handle str "uinteger* / uinteger*"
+void extract_uinteger(char *s, number_value_t uints[2], enum radix_flag flag);
+
+void _flo_to_exact(number_value_t value[2]);
 // is_exact is uint"/"uint
-void _exact_to_flo(u64 value[2], bool is_exact);
+void _exact_to_flo(number_value_t value[2], bool is_exact);
 
 struct number_t {
     struct number_flag_t flag;
-    u64 value[];
+    number_value_t value[];
 };
+
 typedef struct number_t number;
 
 struct object_t {
@@ -141,6 +149,7 @@ struct object_t {
 struct parse_data {
     object *ast;
     symbol **symtab;
+    bool is_eof;
 };
 
 symbol *lookup(parse_data *, char *);
@@ -150,7 +159,7 @@ object *new_symbol(symbol *s);
 string *make_string(char *, size_t);
 object *new_string(string *);
 
-number *make_number(struct number_flag_t flag, u64 value[4]);
+number *make_number(struct number_flag_t flag, const number_value_t value[4]);
 object *new_number(number *);
 object *new_character(u16 ch);
 
@@ -167,21 +176,61 @@ void env_add_primitives(env *, parse_data *);
 
 #define NHASH 9997
 
-object *eval(object *exp, env *env, parse_data *data);
+object *eval_from_ast(object *exp, env *env, parse_data *data);
 void object_print(object *o, env *);
 
 void free_lisp(parse_data *data);
 
-void eof_handle(void);
-
 object *ref(object *o);
 object *unref(object *o);
 
-#define TYPE_CPY(target, source)                                               \
-    assert(sizeof((target)) == sizeof((source)));                              \
-    memcpy(&(target), &(source), sizeof((target)))
+/* #define TYPE_CPY(target, source)                                               \ */
+/*     assert(sizeof((target)) == sizeof((source)));                              \ */
+/*     memcpy(&(target), &(source), sizeof((target))) */
 
-#define TO_TYPE(val, type) (*((type *)(&(val))))
+/* #define TO_TYPE(val, type) (*((type *)(&(val)))) */
+
+static inline object *object_list_entry(object *list) {
+    return list->type == T_PAIR ? car(list) : list;
+}
+
+static inline bool object_list_has_next(object *list) {
+    bool ret_val = list;
+    unref(list);
+    return ret_val;
+}
+
+static inline object *object_list_next(object *idx) {
+    return idx->type == T_PAIR ? cdr(idx) : (unref(idx), NULL);
+}
+
+#define for_each_object_list_entry(o, list)                                    \
+    for (object *idx = ref(list);                                              \
+         !object_list_has_next(ref(idx))                                       \
+             ? false                                                           \
+             : (o = object_list_entry(ref(idx)), true);                        \
+         unref(o), idx = object_list_next(idx))
+
+#define for_each_object_list(list)                                             \
+    for (object *idx = ref(list);                                              \
+         idx && (idx->type == T_PAIR ? true : (unref(idx), false));            \
+         idx = cdr(idx))
+
+static inline object *is_error(object *o) {
+    bool ret = o && o->type == T_ERR;
+    if (ret) {
+        return o;
+    } else {
+        unref(o);
+        return NIL;
+    }
+}
+
+#define ERROR(e) for (object *error = is_error(e); error; error = NIL)
+
+#define ASSERT(cond, fmt, ...) (!(cond) ? new_error(fmt, ##__VA_ARGS__) : NIL)
+
+object *assert_fun_arg_type(char *func, object *o, int i, object_type type);
 
 #ifdef MY_OS
 #define YY_INPUT(_buf, result, max_size)
@@ -192,11 +241,34 @@ object *unref(object *o);
 
 void my_error(const char *);
 #define YY_FATAL_ERROR(msg) my_error(msg)
+#endif
 
 /* typedef void FILE; */
 /* extern int errno; */
 /* extern FILE *stdin; */
 /* extern FILE *stdout; */
-#endif
+
+struct lisp_ctx_opt {
+#if !defined(MY_OS)
+#endif // MY_OS
+};
+
+#include "my_lisp.tab.h"
+
+struct lisp_ctx {
+    yyscan_t scanner;
+    parse_data *parse_data;
+    env *global_env;
+};
+
+struct lisp_ctx *make_lisp_ctx(struct lisp_ctx_opt opt);
+void free_lisp_ctx(struct lisp_ctx **);
+
+#if !defined(MY_OS)
+#include <stdio.h>
+
+int eval_from_io(struct lisp_ctx *ctx, FILE *);
+bool my_lisp_is_eof(struct lisp_ctx *ctx);
+#endif // !defined (MY_OS)
 
 #endif /* MY_LISP_H */
