@@ -1,5 +1,7 @@
 debug
 .ccls-cache
+.idea
+cmake-build-debug
 
 .directory
 compile_commands.json
