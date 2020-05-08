@@ -6,6 +6,7 @@
 #include <my-os/types.h>
 
 #include "os.h"
+#include "number.h"
 
 typedef enum {
     T_PRIMITIVE_PROC = 0x1,
@@ -83,51 +84,6 @@ struct macro_proc_t {
 };
 
 typedef struct macro_proc_t macro_proc;
-enum exact_flag { EXACT = 1, INEXACT };
-enum radix_flag { RADIX_2, RADIX_8, RADIX_10, RADIX_16 };
-enum naninf_flag {
-    NAN_POSITIVE = 1 << 0,
-    INF_POSITIVE = 1 << 1,
-    NAN_NEGATIVE = 1 << 2,
-    INF_NEGATIVE = 1 << 3
-};
-
-#define _REAL_BIT 0x1
-#define _IMAG_BIT 0x2
-#define _REAL_IMAG_BIT (_REAL_BIT | _IMAG_BIT)
-
-struct number_flag_t {
-    u64 complex : 1;
-    u64 flo : 1;   /* 1 flo 0 fix */
-    u64 exact : 2; /* 1 represent "uint"/"uint" */
-    u64 radix : 4;
-    u64 naninf : 8; /* low 4bit real high 4bit imag */
-    u64 size : 4;   /* value size */
-};
-
-void set_number_prefix(struct number_flag_t *number_flag, char c,
-                       enum exact_flag *flag);
-
-typedef union number_value_t {
-    u64 u64_v;
-    double flo_v;
-    s64 s64_v;
-} number_value_t;
-
-void _str_to_real(number_value_t value[2], char *, enum radix_flag, bool);
-// handle str "uinteger* / uinteger*"
-void extract_uinteger(char *s, number_value_t uints[2], enum radix_flag flag);
-
-void _flo_to_exact(number_value_t value[2]);
-// is_exact is uint"/"uint
-void _exact_to_flo(number_value_t value[2], bool is_exact);
-
-struct number_t {
-    struct number_flag_t flag;
-    number_value_t value[];
-};
-
-typedef struct number_t number;
 
 struct object_t {
     object_type type;
@@ -160,6 +116,7 @@ string *make_string(char *, size_t);
 object *new_string(string *);
 
 number *make_number(struct number_flag_t flag, const number_value_t value[4]);
+number *make_number_from_full(const number_full_t *number_full);
 object *new_number(number *);
 object *new_character(u16 ch);
 

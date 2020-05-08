@@ -69,101 +69,6 @@ object *new_character(u16 ch) {
     return o;
 }
 
-enum exact_flag to_exact_flag(char c) {
-    enum exact_flag flag = 0;
-    switch (c) {
-    case 'e':
-    case 'E':
-        flag = EXACT;
-        break;
-    case 'i':
-    case 'I':
-        flag = INEXACT;
-        break;
-    }
-    return flag;
-}
-
-u32 to_radix_flag(char c) {
-    u32 flag = 0;
-    switch (c) {
-    case 'b':
-    case 'B':
-        flag = 1 << RADIX_2;
-        break;
-    case 'o':
-    case 'O':
-        flag = 1 << RADIX_8;
-        break;
-    case 'd':
-    case 'D':
-        flag = 1 << RADIX_10;
-        break;
-    case 'x':
-    case 'X':
-        flag = 1 << RADIX_16;
-        break;
-    }
-    return flag;
-}
-
-void set_number_prefix(struct number_flag_t *number_flag, char c,
-                       enum exact_flag *flag) {
-    // try to match exact flag
-    *flag = to_exact_flag(c);
-    if (*flag) {
-        if (*flag == INEXACT) {
-            number_flag->flo = true;
-        }
-    } else {
-        number_flag->radix = to_radix_flag(c);
-    }
-}
-
-u8 radix_value(enum radix_flag flag) {
-    u8 v = 10;
-    switch (flag) {
-    case RADIX_2:
-        v = 2;
-        break;
-    case RADIX_8:
-        v = 8;
-        break;
-    case RADIX_10:
-        v = 10;
-        break;
-    case RADIX_16:
-        v = 16;
-        break;
-    }
-    return v;
-}
-
-void _str_to_real(number_value_t value[2], char *s, enum radix_flag radix_flag,
-                  bool is_flo) {
-    if (is_flo) {
-        assert(radix_flag == RADIX_10);
-        value[0].flo_v = my_strtod(s);
-        size_t len = strlen(s);
-        char *point = strchr(s, '.');
-        int i = point - s;
-        value[1].u64_v = len - i - 1;
-    } else {
-        value[0].s64_v = my_strtoll(s, radix_value(radix_flag));
-    }
-}
-
-// handle str "uinteger* / uinteger*"
-void extract_uinteger(char *s, number_value_t value[2], enum radix_flag flag) {
-    char *second = strchr(s, '/') + 1;
-    int len = second - s;
-    char *first = my_malloc(len);
-    memcpy(first, s, len - 1);
-    value[0].s64_v = my_strtoll(first, radix_value(flag));
-    value[1].s64_v = my_strtoll(second, radix_value(flag));
-    my_free(first);
-}
-
 static unsigned symhash(char *sym) {
     unsigned int hash = 0;
     unsigned c;
@@ -561,80 +466,11 @@ char *list_to_string(object *list) {
     return list_str;
 }
 
-int _format_naninf(char *buf, enum naninf_flag flag) {
-    int ret = 0;
-    switch (flag) {
-    case NAN_POSITIVE:
-        ret = my_sprintf(buf, "+nan.0");
-        break;
-    case NAN_NEGATIVE:
-        ret = my_sprintf(buf, "-nan.0");
-        break;
-    case INF_POSITIVE:
-        ret = my_sprintf(buf, "+inf.0");
-        break;
-    case INF_NEGATIVE:
-        ret = my_sprintf(buf, "-inf.0");
-        break;
-    }
-    return ret;
-}
-
-int _format_number(char *buf, const number_value_t *value, bool is_flo,
-                   bool is_exact_fix) {
-    int ret = 0;
-    if (is_exact_fix) {
-        ret = my_sprintf(buf, "%+Li/%Li", value[0].s64_v, value[1].s64_v);
-    } else {
-        if (is_flo) {
-            char fmt_buf[30] = {0};
-            my_sprintf(fmt_buf, "%%+.%df", value[1].u64_v);
-            ret = my_sprintf(buf, fmt_buf, value[0].flo_v);
-        } else {
-            ret = my_sprintf(buf, "%+Li", value[0].s64_v);
-        }
-    }
-    return ret;
-}
-
 char *number_to_string(object *o) {
 #define NUMBER_BUF_SIZE 1024
     char buf[NUMBER_BUF_SIZE] = {'\0'};
     char *buf_p = buf;
-    number *number = o->number;
-
-    struct number_flag_t flag = number->flag;
-
-    number_value_t *value = number->value;
-    bool is_flo = flag.flo;
-    bool is_exact = flag.exact & _REAL_BIT;
-    enum naninf_flag naninf_flag = flag.naninf & 0x0f;
-
-    if (naninf_flag) {
-        buf_p += _format_naninf(buf_p, naninf_flag);
-    } else {
-        buf_p += _format_number(buf_p, value, is_flo, is_exact);
-    }
-
-    if (!(flag.naninf & 0xf0)) {
-        if (is_exact || is_flo) {
-            value += 2;
-        } else {
-            value += 1;
-        }
-    }
-
-    if (flag.complex) {
-        is_exact = flag.exact & _IMAG_BIT;
-        naninf_flag = flag.naninf >> 4;
-        if (naninf_flag) {
-            buf_p += _format_naninf(buf_p, naninf_flag);
-        } else {
-            buf_p += _format_number(buf_p, value, is_flo, is_exact);
-        }
-        buf_p += my_sprintf(buf_p, "i");
-    }
-
+    format_number(buf_p, o->number);
     unref(o);
     return my_strdup(buf);
 }
@@ -1520,7 +1356,7 @@ object *primitive_is_real(env *e, object *args, parse_data *data) {
 }
 
 bool number_pred_rational(number *n) {
-    return !n->flag.complex && n->flag.exact & 0x0f;
+    return !n->flag.complex && n->flag.exact_zip & 0x0f;
 }
 
 object *primitive_is_rational(env *e, object *args, parse_data *data) {
@@ -2066,6 +1902,88 @@ object *primitive_set(env *e, object *args, parse_data *data) {
     object *ret = env_set(e, variable->symbol, expression);
     unref(variable);
     return ret;
+}
+
+
+object *primitive_op(env *e, object *args, char op, parse_data *data) {
+/*     object *ret_val = NIL; */
+/*     char op_s[] = {op, '\0'}; */
+
+/*     number *result = NULL; */
+
+/*     int i = 1; */
+/*     object *operand = NIL; */
+
+/*     for_each_object_list_entry(operand, args) { */
+/*         object *o = eval_from_ast(ref(operand), e, data); */
+/*         ERROR(ref(o)) { */
+/*             ret_val = error; */
+/*             goto loop_exit; */
+/*         } */
+
+/*         ERROR(assert_fun_arg_type(op_s, ref(o), i, T_NUMBER)) { */
+/*             ret_val = error; */
+/*             goto loop_exit; */
+/*         } */
+
+/*         if (!result) { */
+/*             result = cpy_number(o->number); */
+/*         } else { */
+/*             number *op1 = result; */
+/*             number *op2 = o->number; */
+/*             switch (op) { */
+/*             case '+': */
+/*                 result = _number_add(op1, op2); */
+/*                 break; */
+/*             case '-': */
+/*                 result = _number_add(op1, op2); */
+/*                 break; */
+/*             case '*': */
+/*                 result = _number_add(op1, op2); */
+/*                 break; */
+/*             case '/': */
+/*                 result = _number_add(op1, op2); */
+/*                 /\* if (eval_val == 0) { *\/ */
+/*                 /\*     return new_error("Division By Zero."); *\/ */
+/*                 /\* } *\/ */
+/*                 break; */
+/*             } */
+/*             my_free(op1); */
+/*         } */
+/*         unref(o); */
+/*         i++; */
+/*         continue; */
+
+/*     loop_exit: */
+/*         unref(idx); */
+/*         unref(operand); */
+/*         unref(o); */
+/*         goto error; */
+/*     } */
+
+/*     ret_val = new_number(result); */
+/*     unref(args); */
+/*     return ret_val; */
+/* error: */
+/*     unref(args); */
+/*     my_free(result); */
+/*     return ret_val; */
+}
+
+object *primitive_add(env *e, object *a, parse_data *data) {
+    return primitive_op(e, a, '+', data);
+}
+
+object *primitive_sub(env *e, object *a, parse_data *data) {
+    return primitive_op(e, a, '-', data);
+}
+
+object *primitive_mul(env *e, object *a, parse_data *data) {
+    return primitive_op(e, a, '*', data);
+}
+
+object *primitive_div(env *e, object *a, parse_data *data) {
+    return primitive_op(e, a, '/', data);
 }
 
 void env_add_primitives(env *env, parse_data *parse_data) {
