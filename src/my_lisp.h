@@ -67,7 +67,6 @@ struct compound_proc_t {
 };
 typedef struct compound_proc_t compound_proc;
 
-struct parse_data;
 typedef struct parse_data parse_data;
 
 typedef object *primitive_proc_ptr(env *env, object *args, parse_data *data);

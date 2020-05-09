@@ -1906,68 +1906,70 @@ object *primitive_set(env *e, object *args, parse_data *data) {
 
 
 object *primitive_op(env *e, object *args, char op, parse_data *data) {
-/*     object *ret_val = NIL; */
-/*     char op_s[] = {op, '\0'}; */
+    object *ret_val = NIL;
+    char op_s[] = {op, '\0'};
 
-/*     number *result = NULL; */
+    number *result = NULL;
 
-/*     int i = 1; */
-/*     object *operand = NIL; */
+    int i = 1;
+    object *operand = NIL;
 
-/*     for_each_object_list_entry(operand, args) { */
-/*         object *o = eval_from_ast(ref(operand), e, data); */
-/*         ERROR(ref(o)) { */
-/*             ret_val = error; */
-/*             goto loop_exit; */
-/*         } */
+    for_each_object_list_entry(operand, args) {
+        object *o = eval_from_ast(ref(operand), e, data);
+        ERROR(ref(o)) {
+            ret_val = error;
+            goto loop_exit;
+        }
 
-/*         ERROR(assert_fun_arg_type(op_s, ref(o), i, T_NUMBER)) { */
-/*             ret_val = error; */
-/*             goto loop_exit; */
-/*         } */
+        ERROR(assert_fun_arg_type(op_s, ref(o), i, T_NUMBER)) {
+            ret_val = error;
+            goto loop_exit;
+        }
 
-/*         if (!result) { */
-/*             result = cpy_number(o->number); */
-/*         } else { */
-/*             number *op1 = result; */
-/*             number *op2 = o->number; */
-/*             switch (op) { */
-/*             case '+': */
-/*                 result = _number_add(op1, op2); */
-/*                 break; */
-/*             case '-': */
-/*                 result = _number_add(op1, op2); */
-/*                 break; */
-/*             case '*': */
-/*                 result = _number_add(op1, op2); */
-/*                 break; */
-/*             case '/': */
-/*                 result = _number_add(op1, op2); */
-/*                 /\* if (eval_val == 0) { *\/ */
-/*                 /\*     return new_error("Division By Zero."); *\/ */
-/*                 /\* } *\/ */
-/*                 break; */
-/*             } */
-/*             my_free(op1); */
-/*         } */
-/*         unref(o); */
-/*         i++; */
-/*         continue; */
+        if (!result) {
+            result = number_cpy(o->number);
+        } else {
+            int ret = 0;
+            number *op1 = result;
+            number *op2 = o->number;
+            switch (op) {
+            case '+':
+                ret = number_add(&result, op1, op2);
+                break;
+            case '-':
+                ret = number_sub(&result, op1, op2);
+                break;
+            case '*':
+                ret = number_mul(&result, op1, op2);
+                break;
+            case '/':
+                ret = number_div(&result, op1, op2);
+                break;
+            }
+            my_free(op1);
+            if (ret < 0) {
+                ret_val = new_error("div 0");
+                goto loop_exit;
+            }
+        }
+        unref(o);
+        i++;
+        continue;
 
-/*     loop_exit: */
-/*         unref(idx); */
-/*         unref(operand); */
-/*         unref(o); */
-/*         goto error; */
-/*     } */
+    loop_exit:
+        unref(idx);
+        unref(operand);
+        unref(o);
+        goto error;
+    }
 
-/*     ret_val = new_number(result); */
-/*     unref(args); */
-/*     return ret_val; */
-/* error: */
-/*     unref(args); */
-/*     my_free(result); */
-/*     return ret_val; */
+    ret_val = new_number(result);
+    unref(args);
+    return ret_val;
+error:
+    unref(args);
+    my_free(result);
+    return ret_val;
 }
 
 object *primitive_add(env *e, object *a, parse_data *data) {

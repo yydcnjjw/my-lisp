@@ -186,7 +186,10 @@ SIGN [-+]
 
 <x_suffix>{
 {EXPONENT_MARK}{SIGN}?{DIGIT10}+ {
-    lex_number_calc_part_exp_from_str(&number_full, cur_parse_part, yytext + 1);
+    int ret = lex_number_calc_part_exp_from_str(&number_full, cur_parse_part, yytext + 1);
+    if (ret < 0) {
+        yyerror(yylloc, yyscanner, yyextra, "parse exp failure");
+    }
     BEGIN(x_mantissa_width);
 }
 

@@ -24,20 +24,13 @@ enum complex_part_t { COMPLEX_PART_REAL, COMPLEX_PART_IMAG };
 
 typedef struct number_flag_t {
     u64 complex : 1;
-    u64 flo : 1;       /* 1 flo 0 fix */
+    u64 flo : 1; /* 1 flo 0 fix */
     u64 radix : 2;
     u64 exact_zip : 2; /* 1 represent sint */
     u64 exact : 2;     /* 1 represent [+-]"uint"/"uint" */
-    u64 naninf : 8; /* low 4bit real high 4bit imag */
-    u64 size : 8;   /* value size */
+    u64 naninf : 8;    /* low 4bit real high 4bit imag */
+    u64 size : 8;      /* value size */
 } number_flag_t;
-
-/**
- * @brief      set number prefix
- * @details    for flex
- */
-void set_number_prefix(struct number_flag_t *number_flag, char c,
-                       enum exact_flag *flag);
 
 typedef union number_value_t {
     u64 u64_v;
@@ -45,16 +38,8 @@ typedef union number_value_t {
     s64 s64_v;
 } number_value_t;
 
-void _str_to_real(number_value_t value[2], char *, enum radix_flag, bool);
-
-/**
- * @brief      _extract_uinteger
- *
- * @details    handle str "uinteger* / uinteger*"
- */
-void _extract_uinteger(char *s, number_value_t uints[2], enum radix_flag flag);
-
 enum number_part_type {
+    NUMBER_PART_NONE = 0, /* zip size 0 */
     /*
      * zip size 2
      * number full: part[0] double part[1] width u64
@@ -77,16 +62,12 @@ enum number_part_type {
      * number full: part[0] enum naninf_flag
      */
     NUMBER_PART_NANINF,
-    NUMBER_PART_NONE, /* zip size 0 */
 };
 
 typedef struct number_part_t {
     number_value_t v[2];
     enum number_part_type type;
 } number_part_t;
-
-void _flo_to_exact(number_value_t value[2]);
-void _exact_to_flo(number_value_t value[2], bool is_exact);
 
 typedef struct number_complex_t {
     number_part_t real;
@@ -129,8 +110,32 @@ void lex_number_populate_part_from_str(number_full_t *number_full,
  */
 void lex_number_populate_imag_part_one_i(number_full_t *number_full, char sign);
 
-void lex_number_calc_part_exp_from_str(number_full_t *number_full,
-                                       enum complex_part_t part,
-                                       char *exp_text);
+int lex_number_calc_part_exp_from_str(number_full_t *number_full,
+                                      enum complex_part_t part, char *exp_text);
 
 int format_number(char *buf, const number *number);
+
+#define DIVIDE_ERR -1;
+
+enum number_part_operate_type {
+    NUMBER_PART_OPERATE_ADD,
+    NUMBER_PART_OPERATE_SUB,
+    NUMBER_PART_OPERATE_MUL,
+    NUMBER_PART_OPERATE_DIV
+};
+
+/**
+ * @brief      number_operate
+ *
+ * @details    number operate and malloc number
+ *
+ */
+int number_add(number **result, const number *var1, const number *var2);
+
+int number_sub(number **result, const number *var1, const number *var2);
+
+int number_mul(number **result, const number *var1, const number *var2);
+
+int number_div(number **result, const number *var1, const number *var2);
+
+number *number_cpy(number *num);
