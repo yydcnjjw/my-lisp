@@ -2,9 +2,11 @@
 
 #include <stdarg.h>
 
-#include "my_lisp.lex.h"
 #include <my-os/list.h>
-#include <number.h>
+
+#include "number.h"
+#include "my_lisp.lex.h"
+
 
 static object True = {.type = T_BOOLEAN, .bool_val = true, .ref_count = 1};
 static object False = {.type = T_BOOLEAN, .bool_val = false, .ref_count = 1};
@@ -28,8 +30,6 @@ object *assert_fun_arg_type(char *func, object *o, int i, object_type type) {
     unref(o);
     return NIL;
 }
-
-object *NOT_SUPPORT() { return new_error("Not Support"); }
 
 object *ref(object *o) {
     if (o) {
@@ -390,7 +390,7 @@ object *env_set(env *e, symbol *sym, object *obj) {
         }
     }
     if (e->parent) {
-        return env_set(e, sym, obj);
+        return env_set(e->parent, sym, obj);
     } else {
         unref(obj);
         return new_error("Exception: variable %s is not bound", sym->name);
@@ -1799,27 +1799,9 @@ object *primitive_symbol_eq(env *e, object *args, parse_data *data) {
                                T_SYMBOL);
 }
 
-bool _number_eq(number *n1, number *n2) {
-    enum naninf_flag n1_real_naninf_flag = n1->flag.naninf & 0x0f;
-    enum naninf_flag n2_real_naninf_flag = n2->flag.naninf & 0x0f;
-    if ((n1_real_naninf_flag == NAN_POSITIVE ||
-         n1_real_naninf_flag == NAN_NEGATIVE) &&
-        (n2_real_naninf_flag == NAN_POSITIVE ||
-         n2_real_naninf_flag == NAN_NEGATIVE)) {
-        return true;
-    }
-
-    if (n1->flag.size != n2->flag.size) {
-        return false;
-    }
-
-    size_t mem_size = sizeof(number) + sizeof(u64) * n1->flag.size;
-    return !memcmp(n1, n2, mem_size);
-}
-
 // number=?
 bool number_eq_pred(object *o1, object *o2) {
-    bool ret = _number_eq(o1->number, o2->number);
+    bool ret = number_eq(o1->number, o2->number);
     unref(o1);
     unref(o2);
     return ret;
@@ -1876,6 +1858,7 @@ ret:
     unref(o2);
     return ret;
 }
+
 // set!
 object *primitive_set(env *e, object *args, parse_data *data) {
     ERROR(assert_fun_args_count("set!", ref(args), 2)) {
@@ -1948,7 +1931,7 @@ object *primitive_op(env *e, object *args, char op, parse_data *data) {
             }
             my_free(op1);
             if (ret < 0) {
-                ret_val = new_error("div 0");
+                ret_val = new_error("error: div 0");
                 goto loop_exit;
             }
         }
@@ -2102,25 +2085,6 @@ void free_lisp_ctx(struct lisp_ctx **ctx) {
     my_free(*ctx);
     *ctx = NULL;
 }
-
-#if !defined(MY_OS)
-int eval_from_io(struct lisp_ctx *ctx, FILE *fi) {
-    yyset_in(fi, ctx->scanner);
-    while (!my_lisp_is_eof(ctx)) {
-        yyparse(ctx->scanner, ctx->parse_data);
-        object *value = eval_from_ast(ctx->parse_data->ast, ctx->global_env,
-                                      ctx->parse_data);
-        ctx->parse_data->ast = NULL;
-        object_print(value, ctx->global_env);
-        my_printf("\n");
-    }
-    fclose(fi);
-    return 0;
-}
-
-bool my_lisp_is_eof(struct lisp_ctx *ctx) { return ctx->parse_data->is_eof; }
-
-#endif // !defined (MY_OS)
 
 object *eval_from_str(struct lisp_ctx *ctx, char *code) {
     int len = strlen(code);

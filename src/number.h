@@ -139,3 +139,5 @@ int number_mul(number **result, const number *var1, const number *var2);
 int number_div(number **result, const number *var1, const number *var2);
 
 number *number_cpy(number *num);
+
+bool number_eq(number *n1, number *n2);

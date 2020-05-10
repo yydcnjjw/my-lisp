@@ -19,6 +19,7 @@ include_directories("/home/yydcnjjw/workspace/code/project/my-os/my-os/arch/x86/
 
 add_executable(my-lisp
   my_lisp_main.c
+  my_lisp_io.c
   my_lisp.c
   os.c
   number.c

@@ -321,9 +321,9 @@ number_full_get_number_part_const(const number_full_t *number_full,
     return complex_part;
 }
 
-size_t number_get_part_zip_size(const number_part_t *part) {
+size_t number_get_part_type_zip_size(enum number_part_type type) {
     size_t size = 0;
-    switch (part->type) {
+    switch (type) {
     case NUMBER_PART_FLO:
     case NUMBER_PART_EXACT:
         size = 2;
@@ -337,6 +337,11 @@ size_t number_get_part_zip_size(const number_part_t *part) {
         break;
     }
     return size;
+}
+
+size_t number_get_part_zip_size(const number_part_t *part) {
+    assert(part);
+    return number_get_part_type_zip_size(part->type);
 }
 
 size_t number_calc_full_zip_size(const number_full_t *source) {
@@ -446,9 +451,22 @@ number_unzip_get_part_type(const number *source,
     return type;
 }
 
+size_t
+number_unzip_extract_part_value_offset(const number *source,
+                                       enum complex_part_t complex_part) {
+    size_t offset = 0;
+    if (complex_part == COMPLEX_PART_IMAG) {
+        offset = number_get_part_type_zip_size(
+            number_unzip_get_part_type(source, COMPLEX_PART_REAL));
+    }
+    return offset;
+}
+
 void number_unzip_extract_part(number_part_t *part, const number *source,
                                enum complex_part_t complex_part) {
-    const number_value_t *value = source->value;
+    const number_value_t *value =
+        source->value +
+        number_unzip_extract_part_value_offset(source, complex_part);
     enum number_part_type type =
         number_unzip_get_part_type(source, complex_part);
     switch (type) {
@@ -481,13 +499,6 @@ void number_unzip_number(number_full_t *number_full, const number *source) {
                               COMPLEX_PART_REAL);
     number_unzip_extract_part(&number_full->complex.imag, source,
                               COMPLEX_PART_IMAG);
-
-    /* if (number_full_get_part(number_full, COMPLEX_PART_REAL)->type == */
-    /*         NUMBER_PART_NONE && */
-    /*     number_full_get_part(number_full, COMPLEX_PART_IMAG)->type != */
-    /*         NUMBER_PART_NONE) { */
-    /*     number_part_set_zip_exact(&number_full->complex.real, 0); */
-    /* } */
 
     number_unzip_extract_prefix(&number_full->prefix, source);
 }
@@ -552,7 +563,7 @@ int format_number_part(char *buf, const number_part_t *part) {
 }
 
 int format_number(char *buf, const number *number) {
-    number_full_t number_full;
+    number_full_t number_full = {};
     number_unzip_number(&number_full, number);
 
     char *buf_p = buf;
@@ -719,7 +730,7 @@ int number_part_naninf_operate(number_part_t *result, const number_part_t *var1,
                                const enum number_part_operate_type type) {
     assert(var1 && var2);
 
-    enum naninf_flag result_naninf;
+    enum naninf_flag result_naninf = NAN_POSITIVE;
 
     enum naninf_flag var1_naninf =
         var1->type == NUMBER_PART_NANINF ? number_part_get_naninf(var1) : 0;
@@ -733,7 +744,6 @@ int number_part_naninf_operate(number_part_t *result, const number_part_t *var1,
         result_naninf = var1_naninf;
         return 0;
     }
-    result_naninf = NAN_POSITIVE;
 
     number_part_set_naninf(result, result_naninf);
     return 0;
@@ -762,8 +772,8 @@ int number_part_operate(number_part_t *result, const number_part_t *var1,
         return number_part_naninf_operate(result, var1, var2, type);
     }
 
-    number_part_t op1;
-    number_part_t op2;
+    number_part_t op1 = {};
+    number_part_t op2 = {};
 
     number_part_copy(&op1, var1);
     number_part_copy(&op2, var2);
@@ -897,15 +907,15 @@ int number_full_complex_operate_mul(number_full_t *result,
     number_part_t *result_imag =
         number_full_get_number_part(result, COMPLEX_PART_IMAG);
 
-    number_part_t ac;
-    number_part_t bd;
+    number_part_t ac = {};
+    number_part_t bd = {};
     NUMBER_ERR_RET(number_part_operate(&ac, a, c, NUMBER_PART_OPERATE_MUL));
     NUMBER_ERR_RET(number_part_operate(&bd, b, d, NUMBER_PART_OPERATE_MUL));
     NUMBER_ERR_RET(
         number_part_operate(result_real, &ac, &bd, NUMBER_PART_OPERATE_SUB));
 
-    number_part_t bc;
-    number_part_t ad;
+    number_part_t bc = {};
+    number_part_t ad = {};
     NUMBER_ERR_RET(number_part_operate(&bc, b, c, NUMBER_PART_OPERATE_MUL));
     NUMBER_ERR_RET(number_part_operate(&ad, a, d, NUMBER_PART_OPERATE_MUL));
     NUMBER_ERR_RET(
@@ -939,17 +949,17 @@ int number_full_complex_operate_div(number_full_t *result,
     number_part_t *result_imag =
         number_full_get_number_part(result, COMPLEX_PART_IMAG);
 
-    number_part_t c2;
-    number_part_t d2;
-    number_part_t c2_add_d2;
+    number_part_t c2 = {};
+    number_part_t d2 = {};
+    number_part_t c2_add_d2 = {};
     NUMBER_ERR_RET(number_part_operate(&c2, c, c, NUMBER_PART_OPERATE_MUL));
     NUMBER_ERR_RET(number_part_operate(&d2, d, d, NUMBER_PART_OPERATE_MUL));
     NUMBER_ERR_RET(
         number_part_operate(&c2_add_d2, &c2, &d2, NUMBER_PART_OPERATE_ADD));
 
-    number_part_t ac;
-    number_part_t bd;
-    number_part_t ac_add_bd;
+    number_part_t ac = {};
+    number_part_t bd = {};
+    number_part_t ac_add_bd = {};
     NUMBER_ERR_RET(number_part_operate(&ac, a, c, NUMBER_PART_OPERATE_MUL));
     NUMBER_ERR_RET(number_part_operate(&bd, b, d, NUMBER_PART_OPERATE_MUL));
     NUMBER_ERR_RET(
@@ -958,9 +968,9 @@ int number_full_complex_operate_div(number_full_t *result,
     NUMBER_ERR_RET(number_part_operate(result_real, &ac_add_bd, &c2_add_d2,
                                        NUMBER_PART_OPERATE_DIV));
 
-    number_part_t bc;
-    number_part_t ad;
-    number_part_t bc_sub_ad;
+    number_part_t bc = {};
+    number_part_t ad = {};
+    number_part_t bc_sub_ad = {};
     NUMBER_ERR_RET(number_part_operate(&bc, b, c, NUMBER_PART_OPERATE_MUL));
     NUMBER_ERR_RET(number_part_operate(&ad, a, d, NUMBER_PART_OPERATE_MUL));
     NUMBER_ERR_RET(
@@ -1038,8 +1048,8 @@ int number_full_operate(number_full_t *result, const number_full_t *var1,
     bool has_complex =
         number_full_is_complex(var1) || number_full_is_complex(var2);
     if (has_complex) {
-        number_full_t op1;
-        number_full_t op2;
+        number_full_t op1 = {};
+        number_full_t op2 = {};
         number_full_to_complex(&op1, var1);
         number_full_to_complex(&op2, var2);
         ret = number_full_complex_operate(result, &op1, &op2, type);
@@ -1072,12 +1082,12 @@ int number_operate(number **result, const number *var1, const number *var2,
     assert(result);
     *result = NULL;
 
-    number_full_t op1;
-    number_full_t op2;
+    number_full_t op1 = {};
+    number_full_t op2 = {};
     number_unzip_number(&op1, var1);
     number_unzip_number(&op2, var2);
 
-    number_full_t full_result;
+    number_full_t full_result = {};
 
     NUMBER_ERR_RET(number_full_operate(&full_result, &op1, &op2, type));
     *result = number_zip_full_number(&full_result);
@@ -1095,6 +1105,15 @@ int number_mul(number **result, const number *var1, const number *var2) {
 }
 int number_div(number **result, const number *var1, const number *var2) {
     return number_operate(result, var1, var2, NUMBER_PART_OPERATE_DIV);
+}
+
+bool number_eq(number *n1, number *n2) {
+    if (n1->flag.size != n2->flag.size) {
+        return false;
+    }
+
+    size_t mem_size = n1->flag.size;
+    return !memcmp(n1, n2, mem_size);
 }
 
 /*
@@ -1198,10 +1217,10 @@ int lex_number_calc_part_exp_from_str(number_full_t *number_full,
 
     s64 _exp = my_strtoll(exp_text, radix_value(RADIX_10));
     s64 exp = (s64)pow(10, _exp);
-    number_part_t number_part_exp;
+    number_part_t number_part_exp = {};
     number_part_set_zip_exact(&number_part_exp, exp);
 
-    number_part_t result;
+    number_part_t result = {};
     if (number_part_operate(&result, complex_part, &number_part_exp,
                             NUMBER_PART_OPERATE_MUL) < 0) {
         return -1;
@@ -1242,7 +1261,7 @@ int lex_number_full_normalize(number_full_t *result,
 }
 
 number *make_number_from_full(const number_full_t *number_full) {
-    number_full_t number_full_normalize;
+    number_full_t number_full_normalize = {};
     lex_number_full_normalize(&number_full_normalize, number_full);
     return number_zip_full_number(&number_full_normalize);
 }

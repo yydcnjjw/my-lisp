@@ -205,8 +205,7 @@ void my_error(const char *);
 /* extern FILE *stdout; */
 
 struct lisp_ctx_opt {
-#if !defined(MY_OS)
-#endif // MY_OS
+
 };
 
 #include "my_lisp.tab.h"
@@ -219,12 +218,5 @@ struct lisp_ctx {
 
 struct lisp_ctx *make_lisp_ctx(struct lisp_ctx_opt opt);
 void free_lisp_ctx(struct lisp_ctx **);
-
-#if !defined(MY_OS)
-#include <stdio.h>
-
-int eval_from_io(struct lisp_ctx *ctx, FILE *);
-bool my_lisp_is_eof(struct lisp_ctx *ctx);
-#endif // !defined (MY_OS)
 
 #endif /* MY_LISP_H */
