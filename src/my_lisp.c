@@ -4,9 +4,8 @@
 
 #include <my-os/list.h>
 
-#include "number.h"
 #include "my_lisp.lex.h"
-
+#include "number.h"
 
 static object True = {.type = T_BOOLEAN, .bool_val = true, .ref_count = 1};
 static object False = {.type = T_BOOLEAN, .bool_val = false, .ref_count = 1};
@@ -1561,11 +1560,30 @@ ret:
 
 object *primitive_begin(env *e, object *args, parse_data *data) {
     object *ret_val = NIL;
+    object *result = NIL;
     object *form = NIL;
     for_each_object_list_entry(form, args) {
-        unref(ret_val);
-        ret_val = eval_from_ast(ref(form), e, data);
+        object *o = eval_from_ast(ref(form), e, data);
+        ERROR(ref(o)) {
+            ret_val = error;
+            goto loop_exit;
+        }
+
+        unref(result);
+        result = ref(o);
+
+        unref(o);
+        continue;
+    loop_exit:
+        unref(idx);
+        unref(form);
+        unref(o);
+        unref(result);
+        goto error;
     }
+
+    ret_val = result;
+ error:
     unref(args);
     return ret_val;
 }
@@ -1887,12 +1905,22 @@ object *primitive_set(env *e, object *args, parse_data *data) {
     return ret;
 }
 
-
-object *primitive_op(env *e, object *args, char op, parse_data *data) {
+object *primitive_number_op(env *e, object *args, char op, parse_data *data) {
     object *ret_val = NIL;
     char op_s[] = {op, '\0'};
 
     number *result = NULL;
+
+    switch (op) {
+    case '+':
+    case '-':
+        result = make_number_real(0);
+        break;
+    case '*':
+    case '/':
+        result = make_number_real(1);
+        break;
+    }
 
     int i = 1;
     object *operand = NIL;
@@ -1909,32 +1937,29 @@ object *primitive_op(env *e, object *args, char op, parse_data *data) {
             goto loop_exit;
         }
 
-        if (!result) {
-            result = number_cpy(o->number);
-        } else {
-            int ret = 0;
-            number *op1 = result;
-            number *op2 = o->number;
-            switch (op) {
-            case '+':
-                ret = number_add(&result, op1, op2);
-                break;
-            case '-':
-                ret = number_sub(&result, op1, op2);
-                break;
-            case '*':
-                ret = number_mul(&result, op1, op2);
-                break;
-            case '/':
-                ret = number_div(&result, op1, op2);
-                break;
-            }
-            my_free(op1);
-            if (ret < 0) {
-                ret_val = new_error("error: div 0");
-                goto loop_exit;
-            }
+        int ret = 0;
+        number *op1 = result;
+        number *op2 = o->number;
+        switch (op) {
+        case '+':
+            ret = number_add(&result, op1, op2);
+            break;
+        case '-':
+            ret = number_sub(&result, op1, op2);
+            break;
+        case '*':
+            ret = number_mul(&result, op1, op2);
+            break;
+        case '/':
+            ret = number_div(&result, op1, op2);
+            break;
         }
+        my_free(op1);
+        if (ret < 0) {
+            ret_val = new_error("error: div 0");
+            goto loop_exit;
+        }
+
         unref(o);
         i++;
         continue;
@@ -1943,32 +1968,30 @@ object *primitive_op(env *e, object *args, char op, parse_data *data) {
         unref(idx);
         unref(operand);
         unref(o);
+        my_free(result);
         goto error;
     }
 
     ret_val = new_number(result);
-    unref(args);
-    return ret_val;
 error:
     unref(args);
-    my_free(result);
     return ret_val;
 }
 
 object *primitive_add(env *e, object *a, parse_data *data) {
-    return primitive_op(e, a, '+', data);
+    return primitive_number_op(e, a, '+', data);
 }
 
 object *primitive_sub(env *e, object *a, parse_data *data) {
-    return primitive_op(e, a, '-', data);
+    return primitive_number_op(e, a, '-', data);
 }
 
 object *primitive_mul(env *e, object *a, parse_data *data) {
-    return primitive_op(e, a, '*', data);
+    return primitive_number_op(e, a, '*', data);
 }
 
 object *primitive_div(env *e, object *a, parse_data *data) {
-    return primitive_op(e, a, '/', data);
+    return primitive_number_op(e, a, '/', data);
 }
 
 void env_add_primitives(env *env, parse_data *parse_data) {

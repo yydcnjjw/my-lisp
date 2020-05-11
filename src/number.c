@@ -1216,9 +1216,13 @@ int lex_number_calc_part_exp_from_str(number_full_t *number_full,
            complex_part->type == NUMBER_PART_ZIP_EXACT);
 
     s64 _exp = my_strtoll(exp_text, radix_value(RADIX_10));
-    s64 exp = (s64)pow(10, _exp);
+    double exp = pow(10, _exp);
     number_part_t number_part_exp = {};
-    number_part_set_zip_exact(&number_part_exp, exp);
+    if (_exp < 0) {
+        number_part_set_flo(&number_part_exp, exp, -_exp);
+    } else {
+        number_part_set_zip_exact(&number_part_exp, exp);
+    }
 
     number_part_t result = {};
     if (number_part_operate(&result, complex_part, &number_part_exp,
@@ -1264,4 +1268,17 @@ number *make_number_from_full(const number_full_t *number_full) {
     number_full_t number_full_normalize = {};
     lex_number_full_normalize(&number_full_normalize, number_full);
     return number_zip_full_number(&number_full_normalize);
+}
+
+number *make_number_real(s64 real) {
+    number_full_t number = {};
+    number_part_set_zip_exact(
+        number_full_get_number_part(&number, COMPLEX_PART_REAL), real);
+    return number_zip_full_number(&number);
+}
+number *make_number_real_flo(double real, u64 width) {
+    number_full_t number = {};
+    number_part_set_flo(number_full_get_number_part(&number, COMPLEX_PART_REAL),
+                        real, width);
+    return number_zip_full_number(&number);
 }

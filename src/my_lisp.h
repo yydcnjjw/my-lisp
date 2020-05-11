@@ -114,8 +114,6 @@ object *new_symbol(symbol *s);
 string *make_string(char *, size_t);
 object *new_string(string *);
 
-number *make_number(struct number_flag_t flag, const number_value_t value[4]);
-number *make_number_from_full(const number_full_t *number_full);
 object *new_number(number *);
 object *new_character(u16 ch);
 
